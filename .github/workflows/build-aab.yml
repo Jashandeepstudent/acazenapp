@@ -1,0 +1,45 @@
+name: Build Signed AAB
+on:
+  push:
+    paths:
+      - 'AcazenApp/**'
+      - '.github/workflows/build-aab.yml'
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: AcazenApp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.ACAZEN_KEYSTORE_BASE64 }}" | base64 -d > app/acazen-upload-key.jks
+
+      - name: Build release AAB
+        env:
+          ACAZEN_KEYSTORE_PATH: acazen-upload-key.jks
+          ACAZEN_KEYSTORE_PASSWORD: ${{ secrets.ACAZEN_KEYSTORE_PASSWORD }}
+          ACAZEN_KEY_ALIAS: upload
+          ACAZEN_KEY_PASSWORD: ${{ secrets.ACAZEN_KEYSTORE_PASSWORD }}
+        run: gradle bundleRelease --no-daemon
+
+      - name: Remove keystore from workspace
+        if: always()
+        run: rm -f app/acazen-upload-key.jks
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Acazen-release-aab
+          path: AcazenApp/app/build/outputs/bundle/release/*.aab

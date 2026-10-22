@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <FrameLayout
+        android:id="@+id/root"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="?android:attr/colorBackground">
+
+        <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+            android:id="@+id/refresh"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <WebView
+                android:id="@+id/webview"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+        </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+
+        <ProgressBar
+            android:id="@+id/progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="3dp"
+            android:max="100"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <!-- Offline screen with a game; its WebView is added in code only while needed -->
+    <FrameLayout
+        android:id="@+id/offline"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/splash_bg"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone" />
+
+    <!-- Soft-blue opening animation, shown over the site while it loads -->
+    <FrameLayout
+        android:id="@+id/splash"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/splash_bg"
+        android:clickable="true"
+        android:focusable="true">
+
+        <View
+            android:id="@+id/ring1"
+            android:layout_width="160dp"
+            android:layout_height="160dp"
+            android:layout_gravity="center"
+            android:alpha="0"
+            android:background="@drawable/splash_ring" />
+
+        <View
+            android:id="@+id/ring2"
+            android:layout_width="160dp"
+            android:layout_height="160dp"
+            android:layout_gravity="center"
+            android:alpha="0"
+            android:background="@drawable/splash_ring" />
+
+        <ImageView
+            android:id="@+id/splash_logo"
+            android:layout_width="160dp"
+            android:layout_height="160dp"
+            android:layout_gravity="center"
+            android:background="@drawable/splash_card_bg"
+            android:clipToOutline="true"
+            android:contentDescription="@string/app_name"
+            android:elevation="12dp"
+            android:scaleType="fitCenter" />
+
+        <ProgressBar
+            android:id="@+id/splash_loader"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="120dp"
+            android:layout_height="3dp"
+            android:layout_gravity="center_horizontal|bottom"
+            android:layout_marginBottom="72dp"
+            android:alpha="0"
+            android:indeterminate="false"
+            android:max="1000"
+            android:progress="0"
+            android:progressDrawable="@drawable/splash_progress" />
+    </FrameLayout>
+</FrameLayout>
