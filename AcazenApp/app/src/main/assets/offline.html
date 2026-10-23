@@ -5,6 +5,27 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Offline</title>
 <style>
+/* Bundled offline fonts (assets/fonts/) for multilingual rendering with
+   no network available. Not applied by default on this screen so the
+   lightweight offline UI keeps using system-ui; available via the
+   "noto" font-family for any content that needs them (e.g. reader
+   text rendered while offline). */
+@font-face{font-family:"Noto Sans";src:url("fonts/NotoSans-Variable.ttf") format("truetype");font-weight:100 900;font-stretch:75% 125%;font-display:swap}
+@font-face{font-family:"Noto Sans";src:url("fonts/NotoSans-Italic-Variable.ttf") format("truetype");font-style:italic;font-weight:100 900;font-stretch:75% 125%;font-display:swap}
+@font-face{font-family:"Noto Serif";src:url("fonts/NotoSerif-Variable.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Sans Devanagari";src:url("fonts/NotoSansDevanagari-Variable.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Serif Devanagari";src:url("fonts/NotoSerifDevanagari-Variable.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Sans Gurmukhi";src:url("fonts/NotoSansGurmukhi-Variable.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Sans Bengali";src:url("fonts/NotoSansBengali-Variable.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Sans Tamil";src:url("fonts/NotoSansTamil-Variable.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Sans Telugu";src:url("fonts/NotoSansTelugu-Variable.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Sans Kannada";src:url("fonts/NotoSansKannada-Variable.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Sans Malayalam";src:url("fonts/NotoSansMalayalam-Variable.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Sans Oriya";src:url("fonts/NotoSansOriya-Variable.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Sans Gujarati";src:url("fonts/NotoSansGujarati-Variable.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Sans Mono";src:url("fonts/NotoSansMono-Variable.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Sans Symbols";src:url("fonts/NotoSansSymbols-Variable.ttf") format("truetype");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Noto Sans Symbols 2";src:url("fonts/NotoSansSymbols2.ttf") format("truetype");font-display:swap}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;overflow:hidden;background:#cde3ff;color:#1d3a66;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;touch-action:none}
 body{display:flex;flex-direction:column}
