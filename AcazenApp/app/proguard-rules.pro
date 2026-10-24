@@ -21,3 +21,10 @@
 # (JSON parsing, animatable value classes) via reflection.
 -keep class com.airbnb.lottie.** { *; }
 -dontwarn com.airbnb.lottie.**
+
+# Lottie pulls in okio, which references the optional JSR-305
+# javax.annotation.Nullable/Nonnull annotations at compile time only
+# (not present at runtime, and not needed at runtime). Without this,
+# R8 fails the build with "Missing class javax.annotation.Nullable"
+# instead of just dropping the unused reference.
+-dontwarn javax.annotation.**
