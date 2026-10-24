@@ -384,7 +384,7 @@ class MainActivity : AppCompatActivity() {
         lottieView.animate().alpha(1f).setStartDelay(150).setDuration(600).start()
 
         val logo = findViewById<ImageView>(R.id.splash_logo)
-        // Uses res/drawable-nodpi/acazen.jpg when present, otherwise a placeholder.
+        // Uses res/drawable-nodpi/acazen.png when present, otherwise a placeholder.
         val logoRes = resources.getIdentifier("acazen", "drawable", packageName)
         logo.setImageResource(if (logoRes != 0) logoRes else R.drawable.splash_logo_placeholder)
 
