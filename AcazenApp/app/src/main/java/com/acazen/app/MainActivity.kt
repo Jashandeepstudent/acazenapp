@@ -31,6 +31,7 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.ProgressBar
+import com.airbnb.lottie.LottieAnimationView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -371,6 +372,12 @@ class MainActivity : AppCompatActivity() {
     // ---- opening animation --------------------------------------------------------------------
 
     private fun startSplash() {
+        // Ambient Lottie particle/ring animation behind the logo. Fades in slightly
+        // after the splash itself appears so it doesn't compete with the logo pop-in.
+        val lottieView = findViewById<LottieAnimationView>(R.id.splash_lottie)
+        lottieView.playAnimation()
+        lottieView.animate().alpha(1f).setStartDelay(150).setDuration(600).start()
+
         val logo = findViewById<ImageView>(R.id.splash_logo)
         // Uses res/drawable-nodpi/acazen.jpg when present, otherwise a placeholder.
         val logoRes = resources.getIdentifier("acazen", "drawable", packageName)
@@ -439,6 +446,7 @@ class MainActivity : AppCompatActivity() {
         splash.animate().alpha(0f).setDuration(450).withEndAction {
             splash.visibility = View.GONE
             pulses.forEach { it.cancel() }
+            findViewById<LottieAnimationView>(R.id.splash_lottie).cancelAnimation()
         }.start()
     }
 

@@ -15,3 +15,9 @@
 
 # Keep Kotlin metadata so reflection-based libraries keep working.
 -keep class kotlin.Metadata { *; }
+
+# Lottie ships its own consumer-rules.pro, but keep this as a safety net
+# in case shrinkResources/minify ever strips something it depends on
+# (JSON parsing, animatable value classes) via reflection.
+-keep class com.airbnb.lottie.** { *; }
+-dontwarn com.airbnb.lottie.**
