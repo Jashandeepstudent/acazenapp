@@ -1,8 +1,11 @@
 <resources>
-    <style name="Theme.Acazen" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <!-- Same light-only theme as values/themes.xml, plus the Android 12+ system splash settings. -->
+    <style name="Theme.Acazen" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="colorAccent">@color/brand</item>
         <item name="android:windowBackground">@color/splash_bg</item>
+        <item name="android:colorBackground">@color/app_background</item>
         <item name="android:windowSplashScreenBackground">@color/splash_bg</item>
         <item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>
+        <item name="android:forceDarkAllowed">false</item>
     </style>
 </resources>

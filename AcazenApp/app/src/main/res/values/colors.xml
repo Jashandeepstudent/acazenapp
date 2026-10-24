@@ -1,6 +1,14 @@
 <resources>
-    <color name="brand">#5B9BE8</color>
-    <color name="splash_bg">#CDE3FF</color>
+    <!-- Acazen's own colors, taken from the website (acazen.com web manifest):
+         theme_color #1A73E8 and background_color #DDEAF6.
+         The app is light-only, so there is deliberately no values-night variant:
+         the splash, the loading screen and the site container always match the website. -->
+    <color name="brand">#1A73E8</color>
+    <color name="splash_bg">#DDEAF6</color>
+    <color name="app_background">#DDEAF6</color>
     <color name="icon_bg">#F5F5F5</color>
-    <color name="app_background">#FFFFFF</color>
+
+    <!-- Border of the logo frame on the opening screen: brand blue fading into the gold of the logo's wings. -->
+    <color name="logo_frame_sky">#8DBBF6</color>
+    <color name="logo_frame_gold">#D8B97F</color>
 </resources>

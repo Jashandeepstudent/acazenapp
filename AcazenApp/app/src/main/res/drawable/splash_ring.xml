@@ -1,4 +1,6 @@
-<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
-    <solid android:color="#33FFFFFF" />
-    <stroke android:width="2dp" android:color="#99FFFFFF" />
+<!-- Ripple that pulses out from behind the logo frame: same rounded shape as the frame. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#26FFFFFF" />
+    <stroke android:width="2dp" android:color="#661A73E8" />
+    <corners android:radius="44dp" />
 </shape>

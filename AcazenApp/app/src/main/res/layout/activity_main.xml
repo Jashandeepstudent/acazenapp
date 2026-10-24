@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
@@ -61,30 +62,43 @@
 
         <View
             android:id="@+id/ring1"
-            android:layout_width="160dp"
-            android:layout_height="160dp"
+            android:layout_width="176dp"
+            android:layout_height="176dp"
             android:layout_gravity="center"
             android:alpha="0"
             android:background="@drawable/splash_ring" />
 
         <View
             android:id="@+id/ring2"
-            android:layout_width="160dp"
-            android:layout_height="160dp"
+            android:layout_width="176dp"
+            android:layout_height="176dp"
             android:layout_gravity="center"
             android:alpha="0"
             android:background="@drawable/splash_ring" />
 
-        <ImageView
-            android:id="@+id/splash_logo"
-            android:layout_width="160dp"
-            android:layout_height="160dp"
+        <!-- Logo in its special frame: rounded gradient border + white mat, with a soft blue glow.
+             The picture inside is clipped to a rounded window, so its corners are rounded too. -->
+        <FrameLayout
+            android:id="@+id/splash_logo_frame"
+            android:layout_width="176dp"
+            android:layout_height="176dp"
             android:layout_gravity="center"
-            android:background="@drawable/splash_card_bg"
-            android:clipToOutline="true"
-            android:contentDescription="@string/app_name"
-            android:elevation="12dp"
-            android:scaleType="fitCenter" />
+            android:background="@drawable/splash_logo_frame"
+            android:elevation="16dp"
+            android:outlineAmbientShadowColor="@color/brand"
+            android:outlineSpotShadowColor="@color/brand"
+            android:padding="10dp"
+            tools:targetApi="28">
+
+            <ImageView
+                android:id="@+id/splash_logo"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/splash_logo_inner"
+                android:clipToOutline="true"
+                android:contentDescription="@string/app_name"
+                android:scaleType="centerCrop" />
+        </FrameLayout>
 
         <ProgressBar
             android:id="@+id/splash_loader"

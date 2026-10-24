@@ -1,7 +1,0 @@
-<resources>
-    <style name="Theme.Acazen" parent="Theme.AppCompat.DayNight.NoActionBar">
-        <item name="colorAccent">@color/brand</item>
-        <item name="android:windowBackground">@color/splash_bg</item>
-        <item name="android:colorBackground">@color/app_background</item>
-    </style>
-</resources>

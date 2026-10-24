@@ -8,6 +8,7 @@ import android.animation.PropertyValuesHolder
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -33,6 +34,7 @@ import android.widget.ImageView
 import android.widget.ProgressBar
 import com.airbnb.lottie.LottieAnimationView
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -140,7 +142,10 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
+        // Light-only app: the status/navigation bars always get dark icons over the website's
+        // light colors, even when the phone itself is in dark mode.
+        val lightBars = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+        enableEdgeToEdge(statusBarStyle = lightBars, navigationBarStyle = lightBars)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
@@ -383,11 +388,12 @@ class MainActivity : AppCompatActivity() {
         val logoRes = resources.getIdentifier("acazen", "drawable", packageName)
         logo.setImageResource(if (logoRes != 0) logoRes else R.drawable.splash_logo_placeholder)
 
-        // 1. Logo pops in with a soft bounce.
-        logo.alpha = 0f
-        logo.scaleX = 0.4f
-        logo.scaleY = 0.4f
-        logo.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(800)
+        // 1. The framed logo pops in with a soft bounce.
+        val frame = findViewById<View>(R.id.splash_logo_frame)
+        frame.alpha = 0f
+        frame.scaleX = 0.4f
+        frame.scaleY = 0.4f
+        frame.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(800)
             .setInterpolator(OvershootInterpolator(1.6f)).start()
 
         // 2. A soft loading bar fades in below and fills while the site loads.
@@ -441,7 +447,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun fadeOutSplash() {
-        findViewById<View>(R.id.splash_logo).animate()
+        findViewById<View>(R.id.splash_logo_frame).animate()
             .scaleX(1.25f).scaleY(1.25f).setDuration(450).start()
         splash.animate().alpha(0f).setDuration(450).withEndAction {
             splash.visibility = View.GONE

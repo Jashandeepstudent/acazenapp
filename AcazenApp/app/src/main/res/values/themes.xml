@@ -1,7 +1,10 @@
-<resources>
-    <style name="Theme.Acazen" parent="Theme.AppCompat.DayNight.NoActionBar">
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Light-only theme (not DayNight): Acazen always shows the website's own colors,
+         whatever the phone's dark-mode setting is. -->
+    <style name="Theme.Acazen" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="colorAccent">@color/brand</item>
         <item name="android:windowBackground">@color/splash_bg</item>
         <item name="android:colorBackground">@color/app_background</item>
+        <item name="android:forceDarkAllowed" tools:targetApi="29">false</item>
     </style>
 </resources>
