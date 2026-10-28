@@ -60,5 +60,8 @@ dependencies {
     implementation 'com.airbnb.android:lottie:6.6.2'
 
     // "Hey Acazen" wake word detection (on-device, offline).
-    implementation 'ai.picovoice:porcupine-android:3.0.5'
+    // Pinned to a version confirmed present on Maven Central (see
+    // https://central.sonatype.com/artifact/ai.picovoice/porcupine-android) — the previous
+    // 3.0.5 pin didn't actually exist there and failed dependency resolution in CI.
+    implementation 'ai.picovoice:porcupine-android:4.0.2'
 }
