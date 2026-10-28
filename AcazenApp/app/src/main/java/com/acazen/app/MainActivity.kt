@@ -13,6 +13,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
@@ -64,6 +65,11 @@ private const val SPLASH_MAX_MS = 7000L
 private const val LEAVE_ANIM_MS = 750L
 
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        // Set on the Intent WakeWordService launches us with when "Hey Acazen" fires.
+        const val ACTION_WAKE_WORD = "com.acazen.app.action.WAKE_WORD"
+    }
 
     private lateinit var webView: WebView
     private lateinit var splash: View
@@ -140,6 +146,103 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // "Hey Acazen" wake word control, exposed to the website so its User Menu toggle can turn
+    // the feature on/off. Only ever attached to acazen.com pages (never the offline page) —
+    // see the addJavascriptInterface call below, which is gated the same way onPermissionRequest
+    // already gates camera access.
+    inner class AssistantBridge {
+        // The web UI calls this before showing its own toggle, so it can show "only supported
+        // in the app" instead of a dead switch when running in a plain mobile browser. Since
+        // this whole class is only attached inside the app, a true return just confirms we're
+        // in a build where the wake-word keyword file + access key were actually included.
+        @JavascriptInterface
+        fun isSupported(): Boolean =
+            BuildConfig.PORCUPINE_ACCESS_KEY.isNotBlank() && assetExists(WakeWordService.KEYWORD_ASSET_PATH)
+
+        @JavascriptInterface
+        fun isEnabled(): Boolean = WakeWordPrefs.isEnabled(this@MainActivity)
+
+        // Starts the permission flow (mic, then notifications on Android 13+) and only turns
+        // the feature on once both are granted. Safe to call repeatedly.
+        @JavascriptInterface
+        fun enable() {
+            runOnUiThread { beginEnableWakeWord() }
+        }
+
+        @JavascriptInterface
+        fun disable() {
+            runOnUiThread { disableWakeWord() }
+        }
+    }
+
+    private fun assetExists(path: String): Boolean =
+        try {
+            assets.open(path).use { true }
+        } catch (e: Exception) {
+            false
+        }
+
+    private fun beginEnableWakeWord() {
+        val micGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!micGranted) {
+            wakeWordMicPermission.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        requestNotificationPermissionThenStart()
+    }
+
+    private fun requestNotificationPermissionThenStart() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                wakeWordNotifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                return
+            }
+        }
+        startWakeWordService()
+    }
+
+    private fun startWakeWordService() {
+        WakeWordPrefs.setEnabled(this, true)
+        val serviceIntent = Intent(this, WakeWordService::class.java).apply {
+            action = WakeWordService.ACTION_START
+        }
+        ContextCompat.startForegroundService(this, serviceIntent)
+    }
+
+    private fun disableWakeWord() {
+        WakeWordPrefs.setEnabled(this, false)
+        val serviceIntent = Intent(this, WakeWordService::class.java).apply {
+            action = WakeWordService.ACTION_STOP
+        }
+        try {
+            startService(serviceIntent)
+        } catch (e: Exception) {
+            // Service may already be stopped — nothing to do.
+        }
+    }
+
+    // Mic permission for the wake word (separate from the website's own camera permission flow
+    // above). If the user denies it, Hey Acazen simply stays off — enable() can be called again.
+    private val wakeWordMicPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) requestNotificationPermissionThenStart()
+        }
+
+    // Android 13+ requires this to show the persistent "listening" notification. Without it the
+    // foreground service would still run (mic access doesn't require it) but the user would have
+    // no way to see or stop it from the notification shade, so we still require it up front.
+    private val wakeWordNotifPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+            // Start regardless: notifications are nice-to-have for visibility/control, but the
+            // persistent low-importance channel also surfaces via Settings > Apps either way,
+            // and withholding the whole feature over this one optional permission would be
+            // surprising to a user who just said yes to the mic.
+            startWakeWordService()
+        }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         // Light-only app: the status/navigation bars always get dark icons over the website's
@@ -167,6 +270,11 @@ class MainActivity : AppCompatActivity() {
             userAgentString = "$userAgentString $APP_UA"
         }
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+
+        // Safe to attach unconditionally: shouldOverrideUrlLoading below sends every link that
+        // isn't acazen.com (or a scheme like tel:/mailto:) out to another app, so this WebView
+        // only ever actually renders acazen.com's own pages.
+        webView.addJavascriptInterface(AssistantBridge(), "AcazenAssistant")
 
         webView.webViewClient = object : WebViewClient() {
             // Web pages stay inside the app; tel:, mailto:, etc. go to the matching app.
@@ -266,7 +374,7 @@ class MainActivity : AppCompatActivity() {
         if (savedInstanceState == null) {
             startSplash()
             if (isConnected()) {
-                webView.loadUrl(HOME)
+                webView.loadUrl(homeUrlFor(intent))
             } else {
                 failedUrl = HOME
                 pageReady = true
@@ -276,8 +384,32 @@ class MainActivity : AppCompatActivity() {
             splashGone = true
             splash.visibility = View.GONE
             webView.restoreState(savedInstanceState)
+            handleWakeWordIntent(intent)
         }
     }
+
+    // Reused whenever MainActivity is already running (singleTop/reorder-to-front) and
+    // "Hey Acazen" wakes it again, or the user taps the listening notification.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleWakeWordIntent(intent)
+    }
+
+    // If woken by the wake word while already on-screen and connected, jump straight into
+    // voice mode instead of reloading the whole page from scratch.
+    private fun handleWakeWordIntent(intent: Intent) {
+        if (intent.action != ACTION_WAKE_WORD) return
+        if (offlineShown) return // don't interrupt the offline screen with a reload
+        if (isConnected()) {
+            webView.loadUrl(homeUrlFor(intent))
+        }
+    }
+
+    // HOME with "?voice=1" appended when launched from the wake word, so the page knows to
+    // start listening immediately (see index.html's ?voice=1 handler).
+    private fun homeUrlFor(intent: Intent): String =
+        if (intent.action == ACTION_WAKE_WORD) "$HOME?voice=1" else HOME
 
     // ---- connectivity -------------------------------------------------------------------------
 

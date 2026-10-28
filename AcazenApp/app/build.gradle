@@ -11,8 +11,15 @@ android {
         applicationId 'com.CosmianGroupLtd.Acazen'
         minSdk 26
         targetSdk 36
-        versionCode 10
-        versionName '2.9.2'
+        versionCode 11
+        versionName '2.10.0'
+
+        // "Hey Acazen" wake word (Porcupine). Read from the environment at build time so the
+        // key is never committed to source. Falls back to an empty string so debug builds that
+        // don't touch the wake-word feature still compile; WakeWordService checks for a blank
+        // key at runtime and disables itself with a clear log message instead of crashing.
+        def porcupineKey = System.getenv("PORCUPINE_KEY") ?: ""
+        buildConfigField "String", "PORCUPINE_ACCESS_KEY", "\"${porcupineKey}\""
     }
     signingConfigs {
         release {
@@ -40,6 +47,9 @@ android {
     kotlinOptions {
         jvmTarget = '17'
     }
+    buildFeatures {
+        buildConfig true
+    }
 }
 
 dependencies {
@@ -48,4 +58,7 @@ dependencies {
     implementation 'androidx.activity:activity-ktx:1.9.3'
     implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
     implementation 'com.airbnb.android:lottie:6.6.2'
+
+    // "Hey Acazen" wake word detection (on-device, offline).
+    implementation 'ai.picovoice:porcupine-android:3.0.5'
 }
