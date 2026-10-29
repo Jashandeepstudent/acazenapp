@@ -1,0 +1,40 @@
+// Packages the Vosk acoustic model as an Android library module, so :app can depend on it
+// without the ~40MB of model files bloating app/'s own source tree. Mirrors the structure
+// used by the official demo (github.com/alphacep/vosk-android-demo/models).
+apply plugin: 'com.android.library'
+
+android {
+    namespace "com.acazen.app.models"
+    compileSdk 36
+
+    defaultConfig {
+        minSdk 26
+        targetSdk 36
+    }
+    buildFeatures {
+        buildConfig = false
+    }
+    sourceSets {
+        main {
+            assets.srcDirs += "$buildDir/generated/assets"
+        }
+    }
+}
+
+// Vosk's StorageService (see WakeWordService.kt) only re-copies the model from assets/ to app
+// storage when this uuid file's contents change from what's already unpacked on the device —
+// so a fresh value here forces every user to pick up a replaced model on their next app update,
+// and leaving it alone means nothing is re-copied for users who already have it. Regenerated
+// on every build (matching the official demo's own genUUID task) since Gradle has no cheap way
+// to fingerprint the large binary model files themselves.
+tasks.register('genUUID') {
+    def uuid = UUID.randomUUID().toString()
+    def odir = file("$buildDir/generated/assets/model-en-us")
+    def ofile = file("$odir/uuid")
+    doLast {
+        mkdir odir
+        ofile.text = uuid
+    }
+}
+
+preBuild.dependsOn(genUUID)

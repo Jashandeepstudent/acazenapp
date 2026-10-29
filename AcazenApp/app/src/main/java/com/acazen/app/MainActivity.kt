@@ -154,10 +154,11 @@ class MainActivity : AppCompatActivity() {
         // The web UI calls this before showing its own toggle, so it can show "only supported
         // in the app" instead of a dead switch when running in a plain mobile browser. Since
         // this whole class is only attached inside the app, a true return just confirms we're
-        // in a build where the wake-word keyword file + access key were actually included.
+        // in a build where the Vosk model was actually bundled (see models/src/main/assets/
+        // model-en-us/README.md) — a build without it still compiles and runs fine, the toggle
+        // just reports itself unsupported instead of offering a dead switch.
         @JavascriptInterface
-        fun isSupported(): Boolean =
-            BuildConfig.PORCUPINE_ACCESS_KEY.isNotBlank() && assetExists(WakeWordService.KEYWORD_ASSET_PATH)
+        fun isSupported(): Boolean = assetFolderHasFiles(WakeWordService.MODEL_ASSET_NAME)
 
         @JavascriptInterface
         fun isEnabled(): Boolean = WakeWordPrefs.isEnabled(this@MainActivity)
@@ -175,9 +176,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun assetExists(path: String): Boolean =
+    // The Vosk model ships as a folder of files under assets/, not a single file, so "is it
+    // bundled" means "does this assets/ subfolder exist and have something in it" rather than
+    // a single assets.open() check.
+    private fun assetFolderHasFiles(path: String): Boolean =
         try {
-            assets.open(path).use { true }
+            !assets.list(path).isNullOrEmpty()
         } catch (e: Exception) {
             false
         }

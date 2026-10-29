@@ -13,13 +13,6 @@ android {
         targetSdk 36
         versionCode 11
         versionName '2.10.0'
-
-        // "Hey Acazen" wake word (Porcupine). Read from the environment at build time so the
-        // key is never committed to source. Falls back to an empty string so debug builds that
-        // don't touch the wake-word feature still compile; WakeWordService checks for a blank
-        // key at runtime and disables itself with a clear log message instead of crashing.
-        def porcupineKey = System.getenv("PORCUPINE_KEY") ?: ""
-        buildConfigField "String", "PORCUPINE_ACCESS_KEY", "\"${porcupineKey}\""
     }
     signingConfigs {
         release {
@@ -47,9 +40,6 @@ android {
     kotlinOptions {
         jvmTarget = '17'
     }
-    buildFeatures {
-        buildConfig true
-    }
 }
 
 dependencies {
@@ -59,9 +49,9 @@ dependencies {
     implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
     implementation 'com.airbnb.android:lottie:6.6.2'
 
-    // "Hey Acazen" wake word detection (on-device, offline).
-    // Pinned to a version confirmed present on Maven Central (see
-    // https://central.sonatype.com/artifact/ai.picovoice/porcupine-android) — the previous
-    // 3.0.5 pin didn't actually exist there and failed dependency resolution in CI.
-    implementation 'ai.picovoice:porcupine-android:4.0.2'
+    // "Hey Acazen" wake word detection (on-device, offline, Apache-2.0, no account/key needed).
+    // Coordinates verified against the official demo at github.com/alphacep/vosk-android-demo.
+    implementation 'net.java.dev.jna:jna:5.18.1@aar'
+    implementation 'com.alphacephei:vosk-android:0.3.75@aar'
+    implementation project(':models')
 }

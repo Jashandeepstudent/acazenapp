@@ -1,8 +1,5 @@
 package com.acazen.app
 
-import ai.picovoice.porcupine.PorcupineException
-import ai.picovoice.porcupine.PorcupineManager
-import ai.picovoice.porcupine.PorcupineManagerCallback
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -15,14 +12,31 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import org.json.JSONObject
+import org.vosk.LibVosk
+import org.vosk.LogLevel
+import org.vosk.Model
+import org.vosk.Recognizer
+import org.vosk.android.RecognitionListener
+import org.vosk.android.SpeechService
+import org.vosk.android.StorageService
+import java.io.IOException
 
 /**
- * Foreground service that keeps Porcupine listening for the "Hey Acazen" wake word, any time
- * the user has the feature turned on — screen on or off, Acazen in the foreground, backgrounded,
- * or not running at all. Android requires a persistent notification for any app that listens to
- * the microphone outside its own foreground UI; that notification is this service's whole reason
+ * Foreground service that keeps Vosk listening for the "Hey Acazen" wake word, any time the user
+ * has the feature turned on — screen on or off, Acazen in the foreground, backgrounded, or not
+ * running at all. Android requires a persistent notification for any app that listens to the
+ * microphone outside its own foreground UI; that notification is this service's whole reason
  * for being a *foreground* service rather than a plain background one, which Android would kill
  * within seconds.
+ *
+ * Uses Vosk (Apache 2.0, fully offline, no account or key) rather than a dedicated low-power
+ * wake-word engine: it's a full small-vocabulary speech recognizer running continuously, which
+ * costs more battery than a purpose-built keyword spotter would, but needs no training pipeline,
+ * no API key and no usage limits. The Recognizer is built with a constrained grammar — just
+ * "hey acazen" plus a catch-all "[unk]" token — rather than open transcription, which keeps
+ * accuracy and speed close to a real keyword spotter despite using a general STT model
+ * underneath. See models/src/main/assets/model-en-us/README.md for how the model gets bundled.
  *
  * On detection, it launches MainActivity with HOME + "?voice=1" so the page starts listening
  * for the actual command the same way it would if the user had tapped the mic button themselves.
@@ -33,20 +47,35 @@ class WakeWordService : Service() {
         private const val TAG = "WakeWordService"
         private const val CHANNEL_ID = "hey_acazen_listening"
         private const val NOTIFICATION_ID = 4201
+        private const val SAMPLE_RATE = 16000.0f
 
         const val ACTION_START = "com.acazen.app.action.START_WAKE_WORD"
         const val ACTION_STOP = "com.acazen.app.action.STOP_WAKE_WORD"
 
-        // Path inside assets/ to the trained "Hey Acazen" keyword file. Drop the file Porcupine
-        // Console generates for "Hey Acazen" (Android platform) at this exact path. Until it's
-        // there, the service logs a clear error and stops itself rather than crashing — the
-        // AcazenAssistant bridge also checks for the file so the web UI can say so up front.
-        const val KEYWORD_ASSET_PATH = "porcupine/hey_acazen_android.ppn"
+        // Folder name inside assets/ — must match models/build.gradle's genUUID task and the
+        // actual unzipped Vosk model folder contents (see models/.../model-en-us/README.md).
+        const val MODEL_ASSET_NAME = "model-en-us"
+
+        // Constrains the recognizer to just this phrase (plus "unknown" for everything else)
+        // instead of open vocabulary transcription — faster and more accurate for a single
+        // fixed wake phrase. Only works with lookahead models (the small model qualifies);
+        // precompiled HCLG graph models do not support this.
+        private const val WAKE_GRAMMAR = "[\"hey acazen\", \"[unk]\"]"
     }
 
-    private var porcupineManager: PorcupineManager? = null
+    private var model: Model? = null
+    private var recognizer: Recognizer? = null
+    private var speechService: SpeechService? = null
+    private var starting = false
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        // Quiet in production — this runs continuously in the background, and Vosk/Kaldi's
+        // INFO level logs on every utterance.
+        LibVosk.setLogLevel(LogLevel.WARNINGS)
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -72,38 +101,109 @@ class WakeWordService : Service() {
         ensureNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification(), foregroundServiceType())
 
-        if (porcupineManager != null) return // already running
+        if (speechService != null || starting) return // already running or loading
+        starting = true
 
-        val accessKey = BuildConfig.PORCUPINE_ACCESS_KEY
-        if (accessKey.isBlank()) {
-            Log.e(TAG, "PORCUPINE_ACCESS_KEY is empty — this build was not compiled with the " +
-                "PORCUPINE_KEY environment variable set. Hey Acazen cannot start.")
-            WakeWordPrefs.setEnabled(this, false)
+        // Unpacking copies the model from assets/ to app storage on first run (or after an
+        // update changes the bundled model's uuid file) — can take a moment for ~40MB, so it
+        // runs on StorageService's own background executor and we pick up from its callback.
+        StorageService.unpack(
+            applicationContext,
+            MODEL_ASSET_NAME,
+            "model",
+            { unpackedModel -> onModelReady(unpackedModel) },
+            { exception ->
+                Log.e(TAG, "Failed to unpack the Vosk model — is $MODEL_ASSET_NAME present in " +
+                    "assets (see models/src/main/assets/model-en-us/README.md)? ${exception.message}", exception)
+                starting = false
+                WakeWordPrefs.setEnabled(this, false)
+                stopSelf()
+            }
+        )
+    }
+
+    private fun onModelReady(unpackedModel: Model) {
+        if (!WakeWordPrefs.isEnabled(this)) {
+            // Turned off while the model was still unpacking.
+            starting = false
+            unpackedModel.close()
             stopSelf()
             return
         }
 
-        val callback = object : PorcupineManagerCallback {
-            override fun invoke(keywordIndex: Int) {
-                onWakeWordDetected()
-            }
+        try {
+            model = unpackedModel
+            val rec = Recognizer(unpackedModel, SAMPLE_RATE, WAKE_GRAMMAR)
+            recognizer = rec
+            val service = SpeechService(rec, SAMPLE_RATE)
+            speechService = service
+            service.startListening(listener)
+            Log.i(TAG, "Hey Acazen is listening.")
+        } catch (e: IOException) {
+            Log.e(TAG, "Failed to start Vosk recognizer: ${e.message}", e)
+            WakeWordPrefs.setEnabled(this, false)
+            stopListening()
+            stopSelf()
+        } finally {
+            starting = false
+        }
+    }
+
+    // Vosk hands back raw Kaldi JSON, e.g. {"text": "hey acazen"} or {"partial": "hey ac"}.
+    // We check both the partial stream (fires fastest, as soon as a few frames match — fires
+    // detection the instant it's confident, without waiting for a pause in speech) and the
+    // final per-utterance result, and only ever fire once per detection via triggerWakeWordOnce.
+    private val listener = object : RecognitionListener {
+        override fun onPartialResult(hypothesis: String) {
+            checkForWakeWord(extractField(hypothesis, "partial"))
         }
 
-        try {
-            porcupineManager = PorcupineManager.Builder()
-                .setAccessKey(accessKey)
-                .setKeywordPaths(arrayOf(KEYWORD_ASSET_PATH))
-                .setSensitivities(floatArrayOf(0.6f))
-                .build(applicationContext, callback)
-            porcupineManager?.start()
-            Log.i(TAG, "Hey Acazen is listening.")
-        } catch (e: PorcupineException) {
-            // Most commonly: the .ppn file isn't in assets yet, or the AccessKey is invalid/out
-            // of free-tier quota. Either way, don't leave a broken foreground service running.
-            Log.e(TAG, "Failed to start Porcupine — is $KEYWORD_ASSET_PATH present in assets? ${e.message}", e)
-            WakeWordPrefs.setEnabled(this, false)
+        override fun onResult(hypothesis: String) {
+            checkForWakeWord(extractField(hypothesis, "text"))
+        }
+
+        override fun onFinalResult(hypothesis: String) {
+            checkForWakeWord(extractField(hypothesis, "text"))
+        }
+
+        override fun onError(exception: Exception) {
+            Log.e(TAG, "Vosk recognition error: ${exception.message}", exception)
+            // AudioRecord/mic errors are usually transient (another app briefly grabbed the
+            // mic). Tear down and let the next ACTION_START (service restart, or the user
+            // toggling it) try again rather than leaving a dead recognizer running silently.
+            stopListening()
             stopSelf()
         }
+
+        override fun onTimeout() {
+            // We never pass a timeout to startListening(), so this shouldn't fire — but handle
+            // it defensively rather than leaving the service in a stopped-but-alive state.
+            stopListening()
+            stopSelf()
+        }
+    }
+
+    private fun extractField(json: String, field: String): String =
+        try {
+            JSONObject(json).optString(field, "")
+        } catch (e: Exception) {
+            ""
+        }
+
+    private var lastTriggerAt = 0L
+
+    private fun checkForWakeWord(text: String) {
+        val normalized = text.trim().lowercase()
+        if (normalized.isEmpty() || !normalized.contains("hey acazen")) return
+
+        // Debounce: a single utterance can produce several partial results that all contain
+        // the phrase as the user keeps talking, and onResult/onFinalResult can also both fire
+        // for the same utterance. Ignore re-triggers within a short window of the last one.
+        val now = System.currentTimeMillis()
+        if (now - lastTriggerAt < 3000L) return
+        lastTriggerAt = now
+
+        onWakeWordDetected()
     }
 
     private fun onWakeWordDetected() {
@@ -123,12 +223,22 @@ class WakeWordService : Service() {
 
     private fun stopListening() {
         try {
-            porcupineManager?.stop()
-            porcupineManager?.delete()
+            speechService?.stop()
+            speechService?.shutdown()
         } catch (e: Exception) {
             // Best-effort cleanup.
         }
-        porcupineManager = null
+        speechService = null
+        try {
+            recognizer?.close()
+        } catch (e: Exception) {
+        }
+        recognizer = null
+        try {
+            model?.close()
+        } catch (e: Exception) {
+        }
+        model = null
     }
 
     override fun onDestroy() {
