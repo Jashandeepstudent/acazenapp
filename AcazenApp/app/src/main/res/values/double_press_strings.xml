@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shown in Settings > Accessibility when the user looks up our service, and on the
+         confirmation dialog. Keep it literal about what it does — Play reviews this text. -->
+    <string name="double_press_accessibility_description">When enabled, double-pressing the Power button opens Acazen\'s voice overlay so you can speak a question that is sent to Acazen automatically. No other keys or screen content are observed.</string>
+</resources>

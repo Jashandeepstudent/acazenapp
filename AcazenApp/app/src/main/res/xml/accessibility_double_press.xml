@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Config for DoublePressPowerService: we only need raw hardware key events (the Power
+     button), so no gestures/windows/content types are requested — the smallest possible
+     footprint, which also makes the Play accessibility review straightforward: this service
+     exists solely to open Acazen's voice overlay on a double-press shortcut. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/double_press_accessibility_description"
+    android:notificationTimeout="100" />
