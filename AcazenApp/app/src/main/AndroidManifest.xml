@@ -15,6 +15,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Lets WakeLaunchActivity light the screen and appear over the lock screen when
+         "Hey Acazen" fires with the phone asleep. Useless without an activity that declares
+         showWhenLocked, which we do — Play policy allows this combination (it does NOT allow
+         bypassing a secure PIN/password lock; the user still authenticates normally). -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:name=".AcazenApplication"
@@ -35,6 +41,49 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Dedicated invisible "hop" activity for the Hey Acazen wake word: turns the screen
+             on / shows over the keyguard, then hands off to MainActivity and finishes itself.
+             excludeFromRecents + NoDisplay-ish translucent theme keep it completely out of the
+             user's way. -->
+        <activity
+            android:name=".WakeLaunchActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleInstance"
+            android:noHistory="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.Acazen.Wake" />
+
+        <!-- The dedicated double-press-Power page: Safari-style "Listening…" overlay that
+             shows what the user says and AUTO-SENDS it to Acazen. Draws over the keyguard and
+             lights the screen; excluded from Recents so it's a pure transient overlay. -->
+        <activity
+            android:name=".VoiceCommandActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.Acazen.VoiceOverlay" />
+
+        <!-- Watches for a global double-press of the Power button (the only sanctioned way a
+             normal app can see hardware keys system-wide). User enables it once via Settings >
+             Accessibility; the app's toggle deep-links straight there. -->
+        <service
+            android:name=".DoublePressPowerService"
+            android:exported="true"
+            android:label="Acazen — Double-press Power"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_double_press" />
+        </service>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

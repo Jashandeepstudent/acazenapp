@@ -11,8 +11,8 @@ android {
         applicationId 'com.CosmianGroupLtd.Acazen'
         minSdk 26
         targetSdk 36
-        versionCode 11
-        versionName '2.10.0'
+        versionCode 13
+        versionName '2.11.0'
     }
     signingConfigs {
         release {
