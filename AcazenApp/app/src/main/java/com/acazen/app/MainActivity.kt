@@ -67,7 +67,8 @@ private const val LEAVE_ANIM_MS = 750L
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        // Set on the Intent WakeWordService launches us with when "Hey Acazen" fires.
+        // Legacy action kept for deep-link/back-compat; the wake word feature was removed in
+        // 2.12.0 in favour of the double-press Power shortcut (VoiceCommandActivity).
         const val ACTION_WAKE_WORD = "com.acazen.app.action.WAKE_WORD"
 
         // The website reads this from the URL once (and the app strips it right after) to
@@ -150,40 +151,32 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // "Hey Acazen" wake word control, exposed to the website so its User Menu toggle can turn
-    // the feature on/off. Only ever attached to acazen.com pages (never the offline page) —
-    // see the addJavascriptInterface call below, which is gated the same way onPermissionRequest
-    // already gates camera access.
+    // Voice-shortcut control, exposed to the website so its User Menu settings page can toggle
+    // the double-press Power feature on/off. Only ever attached to acazen.com pages (never the
+    // offline page) — see the addJavascriptInterface call below.
     inner class AssistantBridge {
-        // The web UI calls this before showing its own toggle, so it can show "only supported
-        // in the app" instead of a dead switch when running in a plain mobile browser. Since
-        // this whole class is only attached inside the app, a true return just confirms we're
-        // in a build where the Vosk model was actually bundled (see models/src/main/assets/
-        // model-en-us/README.md) — a build without it still compiles and runs fine, the toggle
-        // just reports itself unsupported instead of offering a dead switch.
+        // The old "Hey Acazen" wake word was REMOVED in 2.12.0 (always-on Vosk mic listening
+        // proved unreliable and drained battery). These four methods are kept as inert stubs so
+        // any cached web UI that still calls them simply sees "unsupported" instead of throwing
+        // "AcazenAssistant.isSupported is not a function" inside the WebView. New web builds
+        // must use the isDoublePress* / *DoublePress methods below — that is the Siri-style path.
         @JavascriptInterface
-        fun isSupported(): Boolean = assetFolderHasFiles(WakeWordService.MODEL_ASSET_NAME)
+        fun isSupported(): Boolean = false
 
         @JavascriptInterface
-        fun isEnabled(): Boolean = WakeWordPrefs.isEnabled(this@MainActivity)
-
-        // Starts the permission flow (mic, then notifications on Android 13+) and only turns
-        // the feature on once both are granted. Safe to call repeatedly.
-        @JavascriptInterface
-        fun enable() {
-            runOnUiThread { beginEnableWakeWord() }
-        }
+        fun isEnabled(): Boolean = false
 
         @JavascriptInterface
-        fun disable() {
-            runOnUiThread { disableWakeWord() }
-        }
+        fun enable() {}
 
-        // ---- double-press Power shortcut (Safari-style) ------------------------------------
-        // Second toggle in the website's User Menu: "Double-press Power". Uses Android's
-        // built-in speech recognizer behind a dedicated overlay page (VoiceCommandActivity),
-        // so unlike "Hey Acazen" it needs NO always-on mic service and costs zero battery —
-        // the gesture just summons the listening UI on demand.
+        @JavascriptInterface
+        fun disable() {}
+
+        // ---- double-press Power shortcut (Siri-style) --------------------------------------
+        // THE wake feature now: Settings > "Double-press Power". Uses Android's built-in speech
+        // recognizer behind a dedicated overlay page (VoiceCommandActivity), so it needs NO
+        // always-on mic service and costs zero battery — the gesture summons the listening UI
+        // on demand, from the lock screen included.
 
         @JavascriptInterface
         fun isDoublePressSupported(): Boolean = true
@@ -198,7 +191,9 @@ class MainActivity : AppCompatActivity() {
         fun enableDoublePress() {
             runOnUiThread {
                 DoublePressPrefs.setEnabled(this@MainActivity, true)
-                openAccessibilitySettings()
+                // Ask for the mic up front (the overlay dictates with it), then jump to
+                // Accessibility settings so the one-time "Allow" is two taps away.
+                beginEnableDoublePress()
             }
         }
 
@@ -224,76 +219,34 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // The Vosk model ships as a folder of files under assets/, not a single file, so "is it
-    // bundled" means "does this assets/ subfolder exist and have something in it" rather than
-    // a single assets.open() check.
-    private fun assetFolderHasFiles(path: String): Boolean =
-        try {
-            !assets.list(path).isNullOrEmpty()
-        } catch (e: Exception) {
-            false
-        }
-
-    private fun beginEnableWakeWord() {
+    private fun beginEnableDoublePress() {
+        // The overlay needs the mic to transcribe what you say after the gesture. Ask once,
+        // up front, so double-press never dead-ends later on a missing permission. Then send
+        // the user to Accessibility settings to finish (Android can't grant that for us).
         val micGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
         if (!micGranted) {
-            wakeWordMicPermission.launch(Manifest.permission.RECORD_AUDIO)
+            doublePressMicPermission.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
-        requestNotificationPermissionThenStart()
+        openAccessibilitySettingsFromActivity()
     }
 
-    private fun requestNotificationPermissionThenStart() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
-                PackageManager.PERMISSION_GRANTED
-            if (!granted) {
-                wakeWordNotifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                return
-            }
+    private val doublePressMicPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            // Open Settings either way: if they denied the mic the overlay still opens Acazen
+            // (it just can't dictate), and they can retry from the toggle later.
+            openAccessibilitySettingsFromActivity()
         }
-        startWakeWordService()
-    }
 
-    private fun startWakeWordService() {
-        WakeWordPrefs.setEnabled(this, true)
-        val serviceIntent = Intent(this, WakeWordService::class.java).apply {
-            action = WakeWordService.ACTION_START
-        }
-        ContextCompat.startForegroundService(this, serviceIntent)
-    }
-
-    private fun disableWakeWord() {
-        WakeWordPrefs.setEnabled(this, false)
-        val serviceIntent = Intent(this, WakeWordService::class.java).apply {
-            action = WakeWordService.ACTION_STOP
-        }
+    private fun openAccessibilitySettingsFromActivity() {
         try {
-            startService(serviceIntent)
+            startActivity(
+                Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            )
         } catch (e: Exception) {
-            // Service may already be stopped — nothing to do.
         }
     }
-
-    // Mic permission for the wake word (separate from the website's own camera permission flow
-    // above). If the user denies it, Hey Acazen simply stays off — enable() can be called again.
-    private val wakeWordMicPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) requestNotificationPermissionThenStart()
-        }
-
-    // Android 13+ requires this to show the persistent "listening" notification. Without it the
-    // foreground service would still run (mic access doesn't require it) but the user would have
-    // no way to see or stop it from the notification shade, so we still require it up front.
-    private val wakeWordNotifPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
-            // Start regardless: notifications are nice-to-have for visibility/control, but the
-            // persistent low-importance channel also surfaces via Settings > Apps either way,
-            // and withholding the whole feature over this one optional permission would be
-            // surprising to a user who just said yes to the mic.
-            startWakeWordService()
-        }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
