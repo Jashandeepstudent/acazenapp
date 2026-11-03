@@ -1,5 +1,6 @@
 package com.acazen.app
 
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -31,12 +32,17 @@ import java.io.IOException
  * within seconds.
  *
  * Uses Vosk (Apache 2.0, fully offline, no account or key) rather than a dedicated low-power
- * wake-word engine: it's a full small-vocabulary speech recognizer running continuously, which
- * costs more battery than a purpose-built keyword spotter would, but needs no training pipeline,
- * no API key and no usage limits. The Recognizer is built with a constrained grammar — just
- * "hey acazen" plus a catch-all "[unk]" token — rather than open transcription, which keeps
- * accuracy and speed close to a real keyword spotter despite using a general STT model
- * underneath. See models/src/main/assets/model-en-us/README.md for how the model gets bundled.
+ * wake-word engine: it's a full speech recognizer running continuously, which costs more battery
+ * than a purpose-built keyword spotter would, but needs no training pipeline, no API key and no
+ * usage limits. See models/src/main/assets/model-en-us/README.md for how the model gets bundled.
+ *
+ * IMPORTANT — why this uses OPEN-VOCABULARY recognition + fuzzy matching instead of a Vosk
+ * "constrained grammar": the small model's word list does not contain "acazen" at all, so a
+ * grammar like ["hey acazen", "[unk]"] can never produce that literal text — every utterance
+ * collapses to [unk] and the wake word NEVER fires. Instead we transcribe freely and match what
+ * Vosk actually hears ("hey acazen", "hey acason", "hey a casen", "hey ocean", ...) against
+ * phonetic variants of the wake phrase via Levenshtein distance. This also makes the feature
+ * resilient to near-miss pronunciations, which was the other half of "it do not work".
  *
  * On detection, it launches MainActivity with HOME + "?voice=1" so the page starts listening
  * for the actual command the same way it would if the user had tapped the mic button themselves.
@@ -56,11 +62,32 @@ class WakeWordService : Service() {
         // actual unzipped Vosk model folder contents (see models/.../model-en-us/README.md).
         const val MODEL_ASSET_NAME = "model-en-us"
 
-        // Constrains the recognizer to just this phrase (plus "unknown" for everything else)
-        // instead of open vocabulary transcription — faster and more accurate for a single
-        // fixed wake phrase. Only works with lookahead models (the small model qualifies);
-        // precompiled HCLG graph models do not support this.
-        private const val WAKE_GRAMMAR = "[\"hey acazen\", \"[unk]\"]"
+        // The recognizer runs in OPEN-vocabulary mode (no grammar string) on purpose. A
+        // constrained grammar only works for words that exist in the model's vocabulary, and
+        // "acazen" is a made-up brand name that isn't in vosk-model-small-en-us-0.15's word
+        // list — with a ["hey acazen", "[unk]"] grammar every utterance decoded to [unk] and
+        // the wake word could never fire. Open transcription + the fuzzy matcher below is what
+        // actually makes "Hey Acazen" work.
+        private const val MAX_WORDS_PER_SEGMENT = 6
+
+        // Phonetic spellings of "hey acazen" as an English ASR model realistically hears the
+        // brand name ("ak-a-zen"): hey acason / a casen / ack a zen / hey ocean etc. Matched
+        // with Levenshtein distance so small mis-hearings still wake the app. Extend this list
+        // any time users report a pronunciation that doesn't trigger.
+        private val WAKE_VARIANTS = listOf(
+            "heiacazen", "heiacazon", "heiacasen", "heiacasin", "heiaczan",
+            "heiacacen", "heiacaczen", "heiacoken", "heiokan", "heiacan",
+            "heiacizen", "heiacuzzin", "heiacozon", "heyacazen", "heiacazn",
+            "heiazen", "heiaczn", "hiazen", "eyaazen", "aeiazzen"
+        )
+
+        // How many character edits we tolerate against the variants above. Scales down for
+        // short segments so two unrelated short words can't accidentally match.
+        private fun allowedDistance(segmentLength: Int): Int = when {
+            segmentLength <= 5 -> 1
+            segmentLength <= 9 -> 2
+            else -> 3
+        }
     }
 
     private var model: Model? = null
@@ -133,7 +160,10 @@ class WakeWordService : Service() {
 
         try {
             model = unpackedModel
-            val rec = Recognizer(unpackedModel, SAMPLE_RATE, WAKE_GRAMMAR)
+            // Open-vocabulary recognition (no grammar arg) — see the companion object note: a
+            // constrained grammar can never emit "acazen" because the word isn't in the model's
+            // vocabulary, which is why the old build never fired.
+            val rec = Recognizer(unpackedModel, SAMPLE_RATE)
             recognizer = rec
             val service = SpeechService(rec, SAMPLE_RATE)
             speechService = service
@@ -152,7 +182,9 @@ class WakeWordService : Service() {
     // Vosk hands back raw Kaldi JSON, e.g. {"text": "hey acazen"} or {"partial": "hey ac"}.
     // We check both the partial stream (fires fastest, as soon as a few frames match — fires
     // detection the instant it's confident, without waiting for a pause in speech) and the
-    // final per-utterance result, and only ever fire once per detection via triggerWakeWordOnce.
+    // final per-utterance result, and only ever fire once per detection via the debounce in
+    // checkForWakeWord(). Note: SpeechService.startListening() (no timeout) keeps this
+    // recognizer running indefinitely; results arrive whenever an endpoint is reached.
     private val listener = object : RecognitionListener {
         override fun onPartialResult(hypothesis: String) {
             checkForWakeWord(extractField(hypothesis, "partial"))
@@ -193,8 +225,7 @@ class WakeWordService : Service() {
     private var lastTriggerAt = 0L
 
     private fun checkForWakeWord(text: String) {
-        val normalized = text.trim().lowercase()
-        if (normalized.isEmpty() || !normalized.contains("hey acazen")) return
+        if (!matchesWakeWord(text)) return
 
         // Debounce: a single utterance can produce several partial results that all contain
         // the phrase as the user keeps talking, and onResult/onFinalResult can also both fire
@@ -206,18 +237,85 @@ class WakeWordService : Service() {
         onWakeWordDetected()
     }
 
+    // Fuzzy wake-word match against what Vosk actually transcribed. The old code required the
+    // literal substring "hey acazen", which the open-vocab model almost never emits for a
+    // made-up brand name — so nothing ever fired. Now we slide windows of 1..MAX_WORDS_PER_SEGMENT
+    // consecutive words over the transcript, squash them into one lowercase letter-only string,
+    // and accept it if its Levenshtein distance to any phonetic variant is within tolerance.
+    internal fun matchesWakeWord(text: String): Boolean {
+        val normalized = text.lowercase().replace(Regex("[^a-z ]"), " ")
+        val words = normalized.split(' ').filter { it.isNotBlank() }
+        if (words.isEmpty()) return false
+
+        val maxWindow = minOf(MAX_WORDS_PER_SEGMENT, words.size)
+        for (size in 2..maxWindow) {
+            for (start in 0..words.size - size) {
+                val segment = words.subList(start, start + size).joinToString("")
+                val tolerance = allowedDistance(segment.length)
+                for (variant in WAKE_VARIANTS) {
+                    if (kotlin.math.abs(variant.length - segment.length) > tolerance) continue
+                    if (levenshteinAtMost(segment, variant, tolerance)) {
+                        Log.i(TAG, "Wake word matched transcript segment \"$segment\"")
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    // Bounded Levenshtein: returns true iff editDistance(a, b) <= maxDist, early-exiting as
+    // soon as it's provable. Allocates two small int rows per call — negligible even though
+    // this runs on every partial result, because the strings are a handful of characters long.
+    private fun levenshteinAtMost(a: String, b: String, maxDist: Int): Boolean {
+        if (a == b) return true
+        if (kotlin.math.abs(a.length - b.length) > maxDist) return false
+        var prev = IntArray(b.length + 1) { it }       // row i-1
+        for (i in 1..a.length) {
+            val curr = IntArray(b.length + 1)
+            curr[0] = i
+            var rowMin = curr[0]
+            for (j in 1..b.length) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                curr[j] = minOf(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+                if (curr[j] < rowMin) rowMin = curr[j]
+            }
+            if (rowMin > maxDist) return false
+            prev = curr
+        }
+        return prev[b.length] <= maxDist
+    }
+
     private fun onWakeWordDetected() {
         Log.i(TAG, "\"Hey Acazen\" detected — waking the app.")
-        val launch = Intent(this, MainActivity::class.java).apply {
+
+        // Turn the screen on (and dismiss an insecure keyguard) before launching. Without this,
+        // a startActivity() from a background service while the screen is off is silently
+        // dropped by Android and the app never opens — a big part of "it do not work when the
+        // app is closed". With a PIN/pattern/password lock we can't bypass it (no permission to
+        // request that), but the launch below still queues and Acazen comes up right after the
+        // user unlocks.
+        try {
+            val km = getSystemService(KeyguardManager::class.java)
+            if (km != null && !km.isKeyguardSecure) {
+                @Suppress("DEPRECATION")
+                km.newKeyguardLock("WakeWordService").disableKeyguard()
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "Keyguard hop skipped: ${e.message}")
+        }
+
+        val wake = Intent(this, WakeLaunchActivity::class.java).apply {
             action = MainActivity.ACTION_WAKE_WORD
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_FROM_BACKGROUND
         }
         try {
-            startActivity(launch)
+            startActivity(wake)
         } catch (e: Exception) {
-            Log.e(TAG, "Could not launch MainActivity from wake word", e)
+            Log.e(TAG, "Could not launch the wake activity", e)
         }
     }
 

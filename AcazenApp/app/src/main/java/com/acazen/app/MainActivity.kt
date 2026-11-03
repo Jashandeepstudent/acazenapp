@@ -69,6 +69,10 @@ class MainActivity : AppCompatActivity() {
     companion object {
         // Set on the Intent WakeWordService launches us with when "Hey Acazen" fires.
         const val ACTION_WAKE_WORD = "com.acazen.app.action.WAKE_WORD"
+
+        // The website reads this from the URL once (and the app strips it right after) to
+        // auto-send a question captured by the double-press-Power voice overlay.
+        private const val VOICE_TEXT_PARAM = "voice_text"
     }
 
     private lateinit var webView: WebView
@@ -173,6 +177,50 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun disable() {
             runOnUiThread { disableWakeWord() }
+        }
+
+        // ---- double-press Power shortcut (Safari-style) ------------------------------------
+        // Second toggle in the website's User Menu: "Double-press Power". Uses Android's
+        // built-in speech recognizer behind a dedicated overlay page (VoiceCommandActivity),
+        // so unlike "Hey Acazen" it needs NO always-on mic service and costs zero battery —
+        // the gesture just summons the listening UI on demand.
+
+        @JavascriptInterface
+        fun isDoublePressSupported(): Boolean = true
+
+        // True once the user has also completed the one-time enable in system Accessibility
+        // settings; false means the app-side preference is on but Android hasn't activated
+        // the service yet (the web toggle should show "Tap to finish setup in Settings").
+        @JavascriptInterface
+        fun isDoublePressServiceOn(): Boolean = DoublePressPowerService.isRunning()
+
+        @JavascriptInterface
+        fun enableDoublePress() {
+            runOnUiThread {
+                DoublePressPrefs.setEnabled(this@MainActivity, true)
+                openAccessibilitySettings()
+            }
+        }
+
+        @JavascriptInterface
+        fun disableDoublePress() {
+            runOnUiThread {
+                DoublePressPrefs.setEnabled(this@MainActivity, false)
+                // We can't programmatically uncheck an accessibility service (Android forbids
+                // it); send them to the same screen so they can turn "Acazen — Double-press
+                // Power" off, and the site can reflect state via isDoublePressServiceOn().
+                openAccessibilitySettings()
+            }
+        }
+
+        private fun openAccessibilitySettings() {
+            try {
+                startActivity(
+                    Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            } catch (e: Exception) {
+            }
         }
     }
 
@@ -400,10 +448,10 @@ class MainActivity : AppCompatActivity() {
         handleWakeWordIntent(intent)
     }
 
-    // If woken by the wake word while already on-screen and connected, jump straight into
-    // voice mode instead of reloading the whole page from scratch.
+    // If woken by the wake word (or the double-press voice overlay) while already on-screen and
+    // connected, jump straight into voice mode instead of reloading the whole page from scratch.
     private fun handleWakeWordIntent(intent: Intent) {
-        if (intent.action != ACTION_WAKE_WORD) return
+        if (intent.action != ACTION_WAKE_WORD && intent.action != VoiceCommandActivity.ACTION_VOICE_COMMAND) return
         if (offlineShown) return // don't interrupt the offline screen with a reload
         if (isConnected()) {
             webView.loadUrl(homeUrlFor(intent))
@@ -411,9 +459,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     // HOME with "?voice=1" appended when launched from the wake word, so the page knows to
-    // start listening immediately (see index.html's ?voice=1 handler).
-    private fun homeUrlFor(intent: Intent): String =
-        if (intent.action == ACTION_WAKE_WORD) "$HOME?voice=1" else HOME
+    // start listening immediately (see index.html's ?voice=1 handler). When the hand-off came
+    // from the double-press overlay carrying recognized speech, the text rides along as
+    // &voice_text=... (URL-encoded) — the site auto-sends it; see MainActivity's companion
+    // note. The website strips both params from history right after consuming them.
+    private fun homeUrlFor(intent: Intent): String {
+        val wake = intent.action == ACTION_WAKE_WORD ||
+            intent.action == VoiceCommandActivity.ACTION_VOICE_COMMAND
+        if (!wake) return HOME
+        val spoken = intent.getStringExtra(VoiceCommandActivity.EXTRA_VOICE_TEXT)
+        return if (spoken.isNullOrEmpty()) {
+            "$HOME?voice=1"
+        } else {
+            "$HOME?voice=1&$VOICE_TEXT_PARAM=" + Uri.encode(spoken)
+        }
+    }
 
     // ---- connectivity -------------------------------------------------------------------------
 
