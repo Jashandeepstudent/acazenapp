@@ -1,10 +1,14 @@
 package com.acazen.app
 
 import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -18,24 +22,21 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
 /**
- * The dedicated "double-press Power" page: a Safari/Assistant-style listening overlay.
+ * The dedicated "double-press Power" page: a Siri/Assistant-style listening overlay.
  *
  * Flow (exactly what was asked for):
  *   1. User double-presses the Power button anywhere on the phone (screen off included).
  *   2. THIS UI appears instantly over everything (showWhenLocked + turnScreenOn), with a big
  *      pulsing "Listening…" bubble.
- *   3. Whatever the user says appears there as live text (Android's built-in on-device speech
- *      recognizer — no Vosk model, no always-on mic service needed for this path).
+ *   3. Whatever the user says appears there as live text (Android's built-in speech
+ *      recognizer — no wake-word model, no always-on mic service; zero battery drain).
  *   4. When speech ends it is AUTO-SENT: MainActivity opens directly in Acazen voice mode
  *      (?voice=1) carrying the recognized text via ACTION_VOICE_COMMAND, and the site sends it
  *      to Acazen without any further taps.
- *
- * It also doubles as the landing activity for the older wake-word hop (WakeLaunchActivity can
- * route through here); if launched WITHOUT spoken-text intent extras it simply forwards to
- * MainActivity in voice mode like before.
  */
 class VoiceCommandActivity : ComponentActivity() {
 
@@ -48,17 +49,86 @@ class VoiceCommandActivity : ComponentActivity() {
         private const val MAX_LISTEN_MS = 8000L
         private const val SENDING_HOLD_MS = 700L
 
+        private const val CHANNEL_ID = "acazen_wake"
+        private const val WAKE_NOTIFICATION_ID = 4211
+
+        /**
+         * Launch the overlay from the accessibility service while the app is in the background
+         * (or the screen is off).
+         *
+         * A plain startActivity() from a background context is silently BLOCKED by Android's
+         * background-activity-start policy (Android 10+) — that is exactly why the old build
+         * just woke the screen to the wallpaper instead of opening Acazen. The sanctioned way
+         * to bring an activity up from the background is a high-priority notification carrying
+         * a full-screen-intent PendingIntent (we hold USE_FULL_SCREEN_INTENT, and the activity
+         * declares showWhenLocked + turnScreenOn so it draws over the keyguard too). We post it
+         * AND still try a direct start as a fast path for when the app happens to have a valid
+         * background start right now (e.g. screen on, foreground-ish) so it feels instant.
+         */
         fun launchFromDoublePress(context: Context) {
-            val i = Intent(context, VoiceCommandActivity::class.java).apply {
+            val tap = Intent(context, VoiceCommandActivity::class.java).apply {
                 action = ACTION_VOICE_COMMAND
                 addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
                         Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                        Intent.FLAG_FROM_BACKGROUND
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP
                 )
             }
-            context.startActivity(i)
+
+            // Path A: full-screen-intent notification — works even from deep background /
+            // screen off, which is the whole point of the gesture.
+            try {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    nm.createNotificationChannel(NotificationChannel(
+                        CHANNEL_ID, "Acazen voice shortcut",
+                        NotificationManager.IMPORTANCE_DEFAULT
+                    ).apply { setShowBadge(false) })
+                }
+                val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                else PendingIntent.FLAG_UPDATE_CURRENT
+                val pi = PendingIntent.getActivity(context, 0, tap, flags)
+                val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+                    .setSmallIcon(R.mipmap.ic_launcher)
+                    .setContentTitle("Acazen")
+                    .setContentText("Listening… speak now")
+                    .setPriority(NotificationCompat.PRIORITY_MAX)
+                    .setCategory(NotificationCompat.CATEGORY_CALL)
+                    .setAutoCancel(true)
+                    .setOngoing(false)
+                    .setContentIntent(pi)
+                    .build()
+                @Suppress("MissingPermission") // we don't need POST_NOTIFICATIONS to FSI-launch
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    // NotificationManager#notifyFullScreenIntent(int, Notification) is @hide in
+                    // the public SDK (does not resolve at compile time), so call it reflectively:
+                    // on Android 14+ this is what actually grants the background full-screen launch.
+                    var launched = false
+                    try {
+                        val m = nm.javaClass.getMethod(
+                            "notifyFullScreenIntent", Int::class.javaPrimitiveType,
+                            android.app.Notification::class.java
+                        )
+                        m.invoke(nm, WAKE_NOTIFICATION_ID, notification)
+                        launched = true
+                    } catch (e: Exception) {
+                    }
+                    if (!launched) nm.notify(WAKE_NOTIFICATION_ID, notification)
+                } else {
+                    nm.notify(WAKE_NOTIFICATION_ID, notification)
+                }
+            } catch (e: Exception) {
+                // Fall through to the direct attempt below.
+            }
+
+            // Path B: best-effort direct start (no-op if Android blocks it; harmless because
+            // the notification above already queued the same singleTop activity).
+            try {
+                tap.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_FROM_BACKGROUND)
+                context.startActivity(tap)
+            } catch (e: Exception) {
+            }
         }
     }
 

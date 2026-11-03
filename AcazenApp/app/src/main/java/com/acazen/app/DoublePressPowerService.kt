@@ -8,19 +8,29 @@ import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 
 /**
- * Safari-style wake shortcut: DOUBLE-PRESS the Power button, anywhere on the phone (screen on
- * OR off, even from the lock screen), and Acazen's listening UI pops up. Say your question —
- * it appears on screen as text — and it is AUTO-SENT to Acazen. No wake-word model needed for
- * this path, no mic running in the background all day, zero extra battery drain.
+ * Siri-style wake shortcut: DOUBLE-PRESS the Power button anywhere on the phone (screen on OR
+ * off, even from the lock screen) and Acazen's listening UI pops up. Say your question — it
+ * appears on screen as text — and it is AUTO-SENT to Acazen. There is no wake word anymore:
+ * this gesture is the only system-level way a normal Android app can summon its own voice UI
+ * from anywhere, which is exactly how Samsung's "double press Home" for Bixby works.
  *
- * How it works: an AccessibilityService is the only sanctioned way for a normal app to observe
- * hardware key events system-wide. We watch for two KEYCODE_POWER presses (down/up pairs) within
- * DOUBLE_PRESS_WINDOW_MS and then start VoiceCommandActivity, which draws itself over the
- * keyguard. The user must explicitly enable this service once in Settings (Android requires it —
- * we deep-link them there from the app's toggle; see MainActivity's AssistantBridge).
+ * ── Why the previous version opened the wallpaper instead of Acazen ──────────────────────
+ * Two real bugs, both fixed here:
  *
- * Note on Android 9+: a plain double-press Power is also used by some OEMs for camera/assistant;
- * ours still fires because we observe the raw key events before any global handling completes.
+ *  1. onKeyEvent() was NEVER called. Android only delivers raw hardware key events to an
+ *     accessibility service when the service sets the FLAG_REQUEST_FILTER_KEY_EVENTS flag at
+ *     runtime (or declares it in its xml config). The old code requested neither, so the
+ *     double-press detection never ran at all.
+ *
+ *  2. Even if it had fired, VoiceCommandActivity launched with plain startActivity() from a
+ *     background context. Since Android 10 that is blocked by the background-activity-start
+ *     policy — the launch was silently dropped, and what the user saw was simply whatever the
+ *     power presses did on their own (screen off → the wallpaper/lock screen came back on).
+ *
+ * Fixes: request the key-filter flag; and reach the overlay through a notification issued with
+ * setFullScreenIntent(), which is one of the few sanctioned ways to bring an activity to the
+ * foreground from the background — including over the keyguard, since the activity declares
+ * showWhenLocked + turnScreenOn.
  */
 class DoublePressPowerService : AccessibilityService() {
 
@@ -41,7 +51,10 @@ class DoublePressPowerService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         serviceInfo = (serviceInfo ?: AccessibilityServiceInfo()).apply {
-            // Receive every event type so raw hardware key events reach onKeyEvent().
+            // THE critical line: without FLAG_REQUEST_FILTER_KEY_EVENTS the framework never
+            // calls onKeyEvent() and the whole feature is dead (this was the original bug).
+            flags = flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
+            // Key events don't need window-state reads; keep the footprint minimal.
             eventTypes = AccessibilityEvent.TYPES_ALL_MASK
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
             notificationTimeout = 100

@@ -11,8 +11,8 @@ android {
         applicationId 'com.CosmianGroupLtd.Acazen'
         minSdk 26
         targetSdk 36
-        versionCode 13
-        versionName '2.11.0'
+        versionCode 14
+        versionName '2.12.0'
     }
     signingConfigs {
         release {
@@ -49,9 +49,7 @@ dependencies {
     implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
     implementation 'com.airbnb.android:lottie:6.6.2'
 
-    // "Hey Acazen" wake word detection (on-device, offline, Apache-2.0, no account/key needed).
-    // Coordinates verified against the official demo at github.com/alphacep/vosk-android-demo.
-    implementation 'net.java.dev.jna:jna:5.18.1@aar'
-    implementation 'com.alphacephei:vosk-android:0.3.75@aar'
-    implementation project(':models')
+    // The "Hey Acazen" Vosk wake word was REMOVED in 2.12.0 — voice launch now happens via the
+    // double-press Power shortcut + Android's built-in SpeechRecognizer (VoiceCommandActivity),
+    // so the ~40MB Vosk model, vosk-android and JNA are gone from the bundle entirely.
 }

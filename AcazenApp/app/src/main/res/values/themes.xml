@@ -8,24 +8,17 @@
         <item name="android:forceDarkAllowed" tools:targetApi="29">false</item>
     </style>
 
-    <!-- Theme for WakeLaunchActivity, the invisible "hop" screen the "Hey Acazen" wake word
-         launches before handing off to MainActivity. Fully translucent with no animations so
-         it is never visible — it only exists to turn the screen on / show over the keyguard. -->
-    <style name="Theme.Acazen.Wake" parent="Theme.Acazen">
-        <item name="android:windowIsTranslucent">true</item>
-        <item name="android:windowBackground">@android:color/transparent</item>
-        <item name="android:windowContentOverlay">@null</item>
-        <item name="android:windowNoTitle">true</item>
-        <item name="android:windowIsFloating">false</item>
-        <item name="android:backgroundDimEnabled">false</item>
-        <item name="android:windowAnimationStyle">@null</item>
-        <item name="android:windowDisablePreview">true</item>
-    </style>
 
     <!-- Theme for VoiceCommandActivity, the double-press-Power "Listening…" overlay.
          Translucent like the Wake hop (the activity paints its own scrim + card), but with a
          fade so it feels like an assistant surface appearing rather than an app launching. -->
-    <style name="Theme.Acazen.VoiceOverlay" parent="Theme.Acazen.Wake">
+    <style name="Theme.Acazen.VoiceOverlay" parent="Theme.Acazen">
+        <!-- Transient overlay: transparent background, no launch animations. -->
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:backgroundDimEnabled">false</item>
         <item name="android:windowAnimationStyle">@android:style/Animation.Dialog</item>
     </style>
 </resources>

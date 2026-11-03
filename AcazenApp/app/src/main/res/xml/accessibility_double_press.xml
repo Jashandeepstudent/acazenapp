@@ -6,7 +6,7 @@
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagDefault"
+    android:accessibilityFlags="flagDefault|flagRequestFilterKeyEvents"
     android:canRetrieveWindowContent="false"
     android:description="@string/double_press_accessibility_description"
     android:notificationTimeout="100" />

@@ -6,19 +6,13 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
-    <!-- "Hey Acazen" wake word: mic access, the foreground service that keeps listening while
-         the app is backgrounded or closed, its persistent notification, and restarting it after
-         a reboot if the user had it on. -->
+    <!-- Double-press Power voice shortcut: the overlay dictates with the mic, and needs to
+         light the screen and draw over the keyguard when summoned from sleep. The always-on
+         "Hey Acazen" wake word was REMOVED (no FOREGROUND_SERVICE_MICROPHONE, no boot receiver,
+         no Vosk model) — the gesture-based path costs zero battery. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <!-- Lets WakeLaunchActivity light the screen and appear over the lock screen when
-         "Hey Acazen" fires with the phone asleep. Useless without an activity that declares
-         showWhenLocked, which we do — Play policy allows this combination (it does NOT allow
-         bypassing a secure PIN/password lock; the user still authenticates normally). -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
@@ -42,19 +36,6 @@
             </intent-filter>
         </activity>
 
-        <!-- Dedicated invisible "hop" activity for the Hey Acazen wake word: turns the screen
-             on / shows over the keyguard, then hands off to MainActivity and finishes itself.
-             excludeFromRecents + NoDisplay-ish translucent theme keep it completely out of the
-             user's way. -->
-        <activity
-            android:name=".WakeLaunchActivity"
-            android:exported="false"
-            android:excludeFromRecents="true"
-            android:launchMode="singleInstance"
-            android:noHistory="true"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true"
-            android:theme="@style/Theme.Acazen.Wake" />
 
         <!-- The dedicated double-press-Power page: Safari-style "Listening…" overlay that
              shows what the user says and AUTO-SENDS it to Acazen. Draws over the keyguard and
@@ -94,17 +75,6 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <service
-            android:name=".WakeWordService"
-            android:exported="false"
-            android:foregroundServiceType="microphone" />
 
-        <receiver
-            android:name=".BootCompletedReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
     </application>
 </manifest>
