@@ -203,8 +203,10 @@ class VoiceCommandActivity : ComponentActivity() {
                 // Anything other than "you said nothing" → open the app anyway rather than
                 // dead-ending the gesture. ERROR_NO_MATCH / ERROR_SPEAKER_TIMEOUT → gentle retry
                 // once, then hand off empty.
-                if ((error == SpeechRecognizer.ERROR_NO_MATCH ||
-                            error == SpeechRecognizer.ERROR_SPEAKER_TIMEOUT) && !retriedOnce) {
+                // ERROR_SPEAKER_TIMEOUT (7) referenced as a literal constant because it is
+                // @hide in the public SDK and does not resolve at compile time.
+                val noMatchOrTimeout = error == SpeechRecognizer.ERROR_NO_MATCH || error == 7
+                if (noMatchOrTimeout && !retriedOnce) {
                     retriedOnce = true
                     try { sr.startListening(listeningIntent()) } catch (e: Exception) { handOff(null) }
                     return
