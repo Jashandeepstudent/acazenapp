@@ -9,40 +9,45 @@ import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 
 /**
- * Siri-style wake shortcut: HOLD the Power button (~0.5s) anywhere on the phone — screen off,
+ * Siri-style wake shortcut: HOLD the Power button (~0.6s) anywhere on the phone — screen off,
  * lock screen, home, any app — and Acazen's listening UI pops up over everything. Say your
  * question; it appears as live text and is AUTO-SENT to Acazen. There is no wake word anymore.
  *
- * ── Why we moved from DOUBLE-PRESS to HOLD (the "wallpaper bug") ──────────────────────────
- * On real devices (Pixel, Samsung One UI, Xiaomi/HyperOS…) Android routes the power-key gesture
- * itself before any accessibility service can react:
- *   • a short press  → screen off/on (shows the wallpaper/lock screen),
- *   • a double press → OEM-assigned action (camera / Assistant / wallpaper picker),
- *   • a long press   → the power menu, which is DISMISSED by an accessibility service that
- *     consumes the key events — exactly what we do here.
- * Double-press therefore always lost the race with the system gesture and the user saw the
- * wallpaper instead of Acazen. Holding the key is the ONLY power-gesture an accessibility
- * service can reliably intercept AND cancel (we swallow DOWN/UP for the whole hold, so neither
- * the screen toggle nor the power menu ever fires). This is also how Samsung lets you summon
- * Bixby ("hold Home"), so it feels native.
+ * ── Redmi 9 / MIUI deep-dive (why "hold power" still showed the power menu before) ─────────
+ * On MIUI/HyperOS (Redmi 9 included) the power-menu (Hold/Slide/Reboot) is shown by the SYSTEM
+ * as soon as the framework decides a long press happened — driven by ViewConfiguration
+ * .getLongPressTimeout() (~400–500ms), NOT by our accessibility service. The old build triggered
+ * at exactly 500ms, i.e. AT the system threshold → race → power menu wins. Two hard facts about
+ * the accessibility key pipeline explain everything else we now handle:
+ *   • FLAG_REQUEST_FILTER_KEY_EVENTS must be active or onKeyEvent() is NEVER called. MIUI has
+ *     shipped builds where the flag only takes effect if re-declared at runtime after bind — so
+ *     we set it in BOTH places (onServiceConnected + xml config) AND self-heal: if the device is
+ *     unlocked and we have seen ZERO power keys for a long time, we assume the flag was dropped,
+ *     re-post serviceInfo, and surface that state ("MIUI blocked the gesture") on the setup page.
+ *   • Once we consume the DOWN of a long press, some MIUI builds still synthesize their own
+ *     long-press intent from the raw input path. We therefore ALSO cancel any pending power-menu
+ *     via performGlobalAction(GLOBAL_ACTION_CANCEL) right when we fire, and keep swallowing the
+ *     matching UP. Result: hold = Acazen only; quick tap (<180ms) = normal screen off/on.
  *
- * Detection rules (all inside onKeyEvent, which only runs when
- * FLAG_REQUEST_FILTER_KEY_EVENTS is set — set both at runtime below AND in the xml config):
- *   • Press shorter than CANCEL_MS (<180ms) is ignored entirely (screen off/on taps pass
- *     through untouched — we never fight the normal power button).
- *   • Press held >= HOLD_TRIGGER_MS (500ms) with all events consumed → launch the overlay.
- *   • Release before the threshold but after CANCEL_MS → the events were already consumed, so
- *     nothing happens at all (no accidental screen-off, no power menu). Clean and predictable.
+ * Detection rules (all inside onKeyEvent):
+ *   • < CANCEL_MS (180ms): passed through untouched — ordinary screen off/on always works.
+ *   • >= HOLD_TRIGGER_MS (600ms, safely past MIUI's ~400–500ms long-press threshold): launch
+ *     overlay, swallow every event of the press, cancel the system power menu.
+ *   • Released between thresholds: nothing happens (events already consumed). Predictable.
  */
 class DoublePressPowerService : AccessibilityService() {
 
     companion object {
-        /** How long the Power key must be held to summon Acazen. Comfortably past a normal
-         *  screen-off tap, comfortably before Google's Assistant hold (~800ms+). */
-        const val HOLD_TRIGGER_MS = 500L
+        /** Hold length that summons Acazen. Must stay ABOVE the OEM long-press/power-menu
+         *  threshold (~400–500ms on MIUI) so we win the race deterministically. */
+        const val HOLD_TRIGGER_MS = 600L
 
         /** Presses shorter than this are treated as ordinary screen off/on and passed through. */
         const val CANCEL_MS = 180L
+
+        /** If the phone is unlocked and NO power key reached us for this long, MIUI probably
+         *  dropped our key-filter flag at bind time → self-heal by re-posting serviceInfo. */
+        const val STALE_REBIND_MS = 30_000L
 
         private var instance: DoublePressPowerService? = null
 
@@ -53,8 +58,12 @@ class DoublePressPowerService : AccessibilityService() {
         @Volatile var sawAnyPowerKey: Boolean = false
             private set
 
-        /** Diagnostic: last time a hold was successfully detected (for the setup page test row). */
+        /** Diagnostic: last time a hold was successfully detected (setup-page test row). */
         @Volatile var lastHoldAt: Long = 0L
+            private set
+
+        /** Diagnostic: true once we've had to re-post serviceInfo because MIUI dropped the flag. */
+        @Volatile var didSelfHeal: Boolean = false
             private set
     }
 
@@ -62,27 +71,34 @@ class DoublePressPowerService : AccessibilityService() {
 
     // State machine for one physical press of the Power key.
     private var downAt = 0L
-    private var holding = false          // DOWN seen, not yet released
-    private var consumedWholePress = false // every event of this press swallowed (hold fired)
+    private var holding = false
+    private var consumedWholePress = false
     private var holdTimeoutRunnable: Runnable? = null
+    private var lastPowerKeyAt = 0L
 
     override fun onServiceConnected() {
-        super.onServiceConnected()
         instance = this
-        serviceInfo = (serviceInfo ?: AccessibilityServiceInfo()).apply {
-            // THE critical line: without FLAG_REQUEST_FILTER_KEY_EVENTS the framework never
-            // calls onKeyEvent() and the whole feature is dead. Also declared in
-            // res/xml/accessibility_double_press.xml for OEMs that read config at bind time.
-            flags = flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
-            eventTypes = AccessibilityEvent.TYPES_ALL_MASK
-            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            notificationTimeout = 100
-        }
+        applyServiceInfo()
+        super.onServiceConnected()
+    }
+
+    /** Declared BOTH here and in res/xml/accessibility_double_press.xml — MIUI is inconsistent
+     *  about which source it honors; doing both is the documented community fix. */
+    private fun applyServiceInfo() {
+        try {
+            serviceInfo = (serviceInfo ?: AccessibilityServiceInfo()).apply {
+                flags = flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
+                eventTypes = AccessibilityEvent.TYPES_ALL_MASK
+                feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+                notificationTimeout = 100
+            }
+        } catch (e: Exception) { /* non-fatal */ }
     }
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode != KeyEvent.KEYCODE_POWER) return false
         sawAnyPowerKey = true
+        lastPowerKeyAt = System.currentTimeMillis()
 
         when (event.action) {
             KeyEvent.ACTION_DOWN -> {
@@ -90,8 +106,6 @@ class DoublePressPowerService : AccessibilityService() {
                 holding = true
                 consumedWholePress = false
                 downAt = System.currentTimeMillis()
-                // Schedule the hold trigger. Because we will consume the matching UP too, the
-                // system sees NO complete click and NO long-press → no wallpaper, no power menu.
                 cancelHoldTimeout()
                 holdTimeoutRunnable = Runnable {
                     if (holding && System.currentTimeMillis() - downAt >= HOLD_TRIGGER_MS - 20) {
@@ -101,8 +115,7 @@ class DoublePressPowerService : AccessibilityService() {
                         triggerWake()
                     }
                 }.also { mainHandler.postDelayed(it, HOLD_TRIGGER_MS) }
-                // Consume the DOWN immediately: prevents the screen-off animation from starting
-                // under us mid-hold (this was the exact "wallpaper" complaint).
+                // Consume the DOWN immediately: stops the screen-off animation starting mid-hold.
                 return true
             }
 
@@ -111,26 +124,43 @@ class DoublePressPowerService : AccessibilityService() {
                 val heldFor = System.currentTimeMillis() - downAt
                 holding = false
                 return when {
-                    consumedWholePress -> {
-                        // We already launched the overlay during this hold; swallow the UP so
-                        // the system doesn't also register a release of a long press.
-                        true
-                    }
-                    heldFor < CANCEL_MS -> {
-                        // Ordinary quick tap (screen off/on): let BOTH its events through
-                        // untouched. (Its DOWN was consumed above, so replay nothing special —
-                        // Android still toggles the screen on the UP for filtered keys.)
-                        false
-                    }
-                    else -> {
-                        // Released between CANCEL and HOLD thresholds: keep swallowing so no
-                        // stray power-menu/screen-toggle fires. Next press starts fresh.
-                        true
-                    }
+                    consumedWholePress -> true   // swallow UP of the completed hold
+                    heldFor < CANCEL_MS -> false // quick tap passes through: normal screen off/on
+                    else -> true                 // released mid-window: swallow, do nothing
                 }
             }
         }
         return false
+    }
+
+    /** Self-heal watchdog: if the phone is UNLOCKED and actively used but no POWER key ever
+     *  reached onKeyEvent (or none for a long stretch), MIUI most likely dropped our key-filter
+     *  flag at bind time. Re-post serviceInfo so the framework re-reads it. Cheap: debounced to
+     *  at most once per window-change burst. */
+    private val rebindCheck = object : Runnable {
+        override fun run() {
+            try {
+                val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                val awake = pm.isInteractive
+                val stale = System.currentTimeMillis() - lastPowerKeyAt > STALE_REBIND_MS
+                val neverSeen = !sawAnyPowerKey
+                if (awake && (neverSeen || stale)) {
+                    didSelfHeal = true
+                    applyServiceInfo()
+                }
+            } catch (e: Exception) { /* non-fatal */ }
+        }
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // Watch for the user unlocking / waking the device, then verify our key filter is alive.
+        val t = event?.eventType ?: return
+        if (t == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+            t == AccessibilityEvent.TYPE_VIEW_FOCUSED
+        ) {
+            mainHandler.removeCallbacks(rebindCheck)
+            mainHandler.postDelayed(rebindCheck, 2500L)
+        }
     }
 
     private fun cancelHoldTimeout() {
@@ -139,8 +169,9 @@ class DoublePressPowerService : AccessibilityService() {
     }
 
     private fun triggerWake() {
+        // Kill any half-open system power menu BEFORE drawing our overlay (MIUI race fix #2).
+        try { performGlobalAction(GLOBAL_ACTION_CANCEL) } catch (e: Exception) { /* ok */ }
         try {
-            // Light the screen first so the overlay draws instantly even from deep doze.
             val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
             @Suppress("DEPRECATION")
             val wl = pm.newWakeLock(
@@ -158,15 +189,12 @@ class DoublePressPowerService : AccessibilityService() {
         }
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Not needed — we only care about key events. Required abstract method.
-    }
-
     override fun onInterrupt() {}
 
     override fun onDestroy() {
         instance = null
         cancelHoldTimeout()
+        mainHandler.removeCallbacks(rebindCheck)
         super.onDestroy()
     }
 }
