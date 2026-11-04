@@ -68,11 +68,11 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         // Legacy action kept for deep-link/back-compat; the wake word feature was removed in
-        // 2.12.0 in favour of the double-press Power shortcut (VoiceCommandActivity).
+        // 2.12.0 in favour of the hold-Power voice shortcut (VoiceCommandActivity).
         const val ACTION_WAKE_WORD = "com.acazen.app.action.WAKE_WORD"
 
         // The website reads this from the URL once (and the app strips it right after) to
-        // auto-send a question captured by the double-press-Power voice overlay.
+        // auto-send a question captured by the hold-Power voice overlay.
         private const val VOICE_TEXT_PARAM = "voice_text"
     }
 
@@ -152,7 +152,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     // Voice-shortcut control, exposed to the website so its User Menu settings page can toggle
-    // the double-press Power feature on/off. Only ever attached to acazen.com pages (never the
+    // the hold-Power voice feature on/off. Only ever attached to acazen.com pages (never the
     // offline page) — see the addJavascriptInterface call below.
     inner class AssistantBridge {
         // The old "Hey Acazen" wake word was REMOVED in 2.12.0 (always-on Vosk mic listening
@@ -172,8 +172,8 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun disable() {}
 
-        // ---- double-press Power shortcut (Siri-style) --------------------------------------
-        // THE wake feature now: Settings > "Double-press Power". Uses Android's built-in speech
+        // ---- hold-Power voice shortcut (Siri-style) --------------------------------------
+        // THE wake feature now: Settings > "Hold Power Voice". Uses Android's built-in speech
         // recognizer behind a dedicated overlay page (VoiceCommandActivity), so it needs NO
         // always-on mic service and costs zero battery — the gesture summons the listening UI
         // on demand, from the lock screen included.
@@ -242,7 +242,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun beginEnableDoublePress() {
         // The overlay needs the mic to transcribe what you say after the gesture. Ask once,
-        // up front, so double-press never dead-ends later on a missing permission. Then send
+        // up front, so the hold gesture never dead-ends later on a missing permission. Then send
         // the user to Accessibility settings to finish (Android can't grant that for us).
         val micGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
@@ -422,7 +422,7 @@ class MainActivity : AppCompatActivity() {
         handleWakeWordIntent(intent)
     }
 
-    // If woken by the wake word (or the double-press voice overlay) while already on-screen and
+    // If woken by the wake word (or the hold-Power voice overlay) while already on-screen and
     // connected, jump straight into voice mode instead of reloading the whole page from scratch.
     private fun handleWakeWordIntent(intent: Intent) {
         if (intent.action != ACTION_WAKE_WORD && intent.action != VoiceCommandActivity.ACTION_VOICE_COMMAND) return
@@ -434,7 +434,7 @@ class MainActivity : AppCompatActivity() {
 
     // HOME with "?voice=1" appended when launched from the wake word, so the page knows to
     // start listening immediately (see index.html's ?voice=1 handler). When the hand-off came
-    // from the double-press overlay carrying recognized speech, the text rides along as
+    // from the hold-Power overlay carrying recognized speech, the text rides along as
     // &voice_text=... (URL-encoded) — the site auto-sends it; see MainActivity's companion
     // note. The website strips both params from history right after consuming them.
     private fun homeUrlFor(intent: Intent): String {

@@ -26,10 +26,10 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
 /**
- * The dedicated "double-press Power" page: a Siri/Assistant-style listening overlay.
+ * The dedicated "hold Power" page: a Siri/Assistant-style listening overlay.
  *
  * Flow (exactly what was asked for):
- *   1. User double-presses the Power button anywhere on the phone (screen off included).
+ *   1. User holds the Power button (~0.5s) anywhere on the phone (screen off included).
  *   2. THIS UI appears instantly over everything (showWhenLocked + turnScreenOn), with a big
  *      pulsing "Listening…" bubble.
  *   3. Whatever the user says appears there as live text (Android's built-in speech
@@ -44,7 +44,7 @@ class VoiceCommandActivity : ComponentActivity() {
         const val ACTION_VOICE_COMMAND = "com.acazen.app.action.VOICE_COMMAND"
         const val EXTRA_VOICE_TEXT = "voice_text"
 
-        // Test mode: launched from the Double-press Power setup page ("Try it right now") so the
+        // Test mode: launched from the Hold-Power setup page ("Try it right now") so the
         // user can rehearse the exact overlay before ever pressing the button. Same UI, same
         // recognizer — proves end-to-end that mic + speech service work on this device.
         const val ACTION_TEST = "com.acazen.app.action.DOUBLE_PRESS_TEST"
@@ -172,7 +172,7 @@ class VoiceCommandActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         // Light the screen and draw over the keyguard immediately — this is the whole point
-        // of launching from a double-press while the phone sleeps.
+        // of launching from a power-hold while the phone sleeps.
         setShowWhenLocked(true)
         setTurnScreenOn(true)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
