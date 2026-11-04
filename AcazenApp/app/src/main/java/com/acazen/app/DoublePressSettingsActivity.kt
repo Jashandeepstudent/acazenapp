@@ -219,7 +219,7 @@ class DoublePressSettingsActivity : ComponentActivity() {
         col.addView(titleText("Hold Power button", 24f, "#112133", bold = true, top = 0))
         col.addView(bodyText(
             "Wake Acazen anywhere, even on the lock screen — exactly like holding the Side button for Assistant. " +
-                "HOLD Power for half a second → Acazen pops up listening → say your question → it is sent automatically.",
+                "HOLD Power for ~" + (DoublePressPowerService.HOLD_TRIGGER_MS / 1000.0) + "s → Acazen pops up listening → say your question → it is sent automatically.",
             top = 6
         ))
 
@@ -279,7 +279,7 @@ class DoublePressSettingsActivity : ComponentActivity() {
         // How it works ---------------------------------------------------------------
         col.addView(titleText("How it works", 15f, "#112133", bold = true, top = 30))
         col.addView(bodyText(
-            "① HOLD the Power button for about half a second (the screen stays as it is).\n" +
+            "① HOLD the Power button for about " + (DoublePressPowerService.HOLD_TRIGGER_MS / 1000.0) + " seconds (the screen stays as it is).\n" +
                 "② Acazen appears full-screen with a pulsing mic and writes what it hears.\n" +
                 "③ When you stop talking, the question is sent to Acazen by itself.",
             top = 8
@@ -456,10 +456,13 @@ class DoublePressSettingsActivity : ComponentActivity() {
             if (animated && !announcedReady) {
                 announcedReady = true
                 val keysSeen = DoublePressPowerService.sawAnyPowerKey
-                toast(if (keysSeen)
-                    "✅ Hold-Power is ON — press and HOLD Power for half a second anywhere to speak"
+                val heal = DoublePressPowerService.didSelfHeal
+                val holdSecs = DoublePressPowerService.HOLD_TRIGGER_MS / 1000.0
+                toast((if (keysSeen)
+                    "✅ Hold-Power is ON — press and HOLD Power for ~${holdSecs}s anywhere to speak"
                 else
-                    "Almost done ✅ — now try it: press and HOLD Power for half a second (release when Acazen appears)")
+                    "Almost done ✅ — now try it: press and HOLD Power for ~${holdSecs}s (release when Acazen appears)")
+                    + (if (heal) "\n⚠️ MIUI blocked the gesture once — auto-repaired. If the power menu still appears, keep holding until Acazen pops (it cancels the menu)." else ""))
             }
         } else {
             announcedReady = false
