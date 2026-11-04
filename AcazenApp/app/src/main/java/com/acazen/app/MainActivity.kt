@@ -181,19 +181,30 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun isDoublePressSupported(): Boolean = true
 
-        // True once the user has also completed the one-time enable in system Accessibility
-        // settings; false means the app-side preference is on but Android hasn't activated
-        // the service yet (the web toggle should show "Tap to finish setup in Settings").
+        // TRUE source of truth: reads Settings.Secure for our service (not just the running
+        // instance pointer, which lags while Android rebinds and made an ON feature show OFF —
+        // the "setting never saves" bug). Also refreshes the local mirror pref.
         @JavascriptInterface
-        fun isDoublePressServiceOn(): Boolean = DoublePressPowerService.isRunning()
+        fun isDoublePressServiceOn(): Boolean {
+            val on = DoublePressPrefs.isServiceEnabledInSettings(this@MainActivity) ||
+                DoublePressPowerService.isRunning()
+            DoublePressPrefs.setEnabled(this@MainActivity, on)
+            return on
+        }
+
+        // Opens the dedicated native setup page (animated step checklist: mic -> accessibility
+        // -> live test). The website sheet now routes here instead of doing its own half-flow.
+        @JavascriptInterface
+        fun openDoublePressSetup() {
+            runOnUiThread { DoublePressSettingsActivity.launch(this@MainActivity) }
+        }
 
         @JavascriptInterface
         fun enableDoublePress() {
             runOnUiThread {
-                DoublePressPrefs.setEnabled(this@MainActivity, true)
-                // Ask for the mic up front (the overlay dictates with it), then jump to
-                // Accessibility settings so the one-time "Allow" is two taps away.
-                beginEnableDoublePress()
+                // Don't fake-enable a pref that can't be honored (accessibility must be flipped
+                // by the user in system UI). Route them to the guided native setup page.
+                DoublePressSettingsActivity.launch(this@MainActivity)
             }
         }
 
@@ -202,9 +213,19 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 DoublePressPrefs.setEnabled(this@MainActivity, false)
                 // We can't programmatically uncheck an accessibility service (Android forbids
-                // it); send them to the same screen so they can turn "Acazen — Double-press
-                // Power" off, and the site can reflect state via isDoublePressServiceOn().
-                openAccessibilitySettings()
+                // it); deep-link straight to OUR service's detail toggle this time (previously
+                // it dumped users on the generic list where they couldnt find Acazen -> looked
+                // like nothing saved).
+                try {
+                    startActivity(
+                        Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS")
+                            .putExtra(":settings:fragment_args_key",
+                                packageName + "/" + packageName + ".DoublePressPowerService")
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                } catch (e: Exception) {
+                    openAccessibilitySettings()
+                }
             }
         }
 

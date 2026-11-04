@@ -1,5 +1,8 @@
-.kotlin/
-*.salive
-*.patch
-*.bundle
+node_modules/
+AcazenApp/build/
+AcazenApp/app/build/
 prwork/
+package-lock.json
+wake-word-*.patch
+wake-word-*.bundle
+local.properties
