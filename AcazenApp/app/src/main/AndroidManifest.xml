@@ -50,7 +50,7 @@
         <activity
             android:name=".DoublePressSettingsActivity"
             android:exported="false"
-            android:label="Double-press Power"
+            android:label="Hold Power Voice"
             android:launchMode="singleTop"
             android:theme="@style/Theme.Acazen" />
 
@@ -69,7 +69,7 @@
         <service
             android:name=".DoublePressPowerService"
             android:exported="true"
-            android:label="Acazen — Double-press Power"
+            android:label="Acazen — Hold Power Voice"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />

@@ -28,7 +28,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 
 /**
- * THE dedicated, beautiful setup page for the double-press Power wake shortcut.
+ * THE dedicated, beautiful setup page for the hold-Power wake shortcut.
  *
  * It replaces the old "toggle inside the website sheet" flow, which had two real bugs:
  *
@@ -202,7 +202,7 @@ class DoublePressSettingsActivity : ComponentActivity() {
 
         // Hero ------------------------------------------------------------------
         val heroIcon = TextView(this).apply {
-            text = "⏻⏻"
+            text = "⏻"
             textSize = 26f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(Color.parseColor("#1A73E8"))
@@ -216,10 +216,10 @@ class DoublePressSettingsActivity : ComponentActivity() {
         )
         col.addView(heroWrap, lp(w = -1, h = dp(96)))
 
-        col.addView(titleText("Double-press Power", 24f, "#112133", bold = true, top = 0))
+        col.addView(titleText("Hold Power button", 24f, "#112133", bold = true, top = 0))
         col.addView(bodyText(
-            "Wake Acazen anywhere, even on the lock screen — exactly like pressing Side button for Assistant. " +
-                "Press Power twice → Acazen pops up listening → say your question → it is sent automatically.",
+            "Wake Acazen anywhere, even on the lock screen — exactly like holding the Side button for Assistant. " +
+                "HOLD Power for half a second → Acazen pops up listening → say your question → it is sent automatically.",
             top = 6
         ))
 
@@ -251,7 +251,7 @@ class DoublePressSettingsActivity : ComponentActivity() {
         stepList.addView(
             stepRow(
                 "2", "Turn on the shortcut",
-                "Flip \"Acazen — Double-press Power\" ON in the screen that opens, then come back here.",
+                "Flip \"Acazen — Hold Power Voice\" ON in the screen that opens, then come back here.",
                 accPill
             ) { openAccessibilityDetail() }
         )
@@ -279,17 +279,17 @@ class DoublePressSettingsActivity : ComponentActivity() {
         // How it works ---------------------------------------------------------------
         col.addView(titleText("How it works", 15f, "#112133", bold = true, top = 30))
         col.addView(bodyText(
-            "① Press the Power button twice quickly.\n" +
+            "① HOLD the Power button for about half a second (the screen stays as it is).\n" +
                 "② Acazen appears full-screen with a pulsing mic and writes what it hears.\n" +
                 "③ When you stop talking, the question is sent to Acazen by itself.",
             top = 8
         ))
 
         // Troubleshooting -------------------------------------------------------------
-        col.addView(titleText("If double-press still opens something else", 15f, "#112133", bold = true, top = 26))
+        col.addView(titleText("If holding Power still opens something else", 15f, "#112133", bold = true, top = 26))
         col.addView(bodyText(
-            "Some phones map double-press Power to their own feature (wallpaper picker, camera, Assistant). " +
-                "Turn that mapping OFF so the gesture is free:\n\n" +
+            "Some phones map long/held Power presses to their own features (power menu, Assistant, camera). " +
+                "Our service cancels the power menu automatically while enabled; if yours still shows one, turn these OFF:\n\n" +
                 "• Pixel / stock: Settings › System › Gestures › Power button › hold for Assistant = Off\n" +
                 "• Samsung: Settings › Advanced features › Side key\n" +
                 "• Xiaomi/Redmi: Settings › Always-on display & Lock screen / Extra settings\n" +
@@ -457,9 +457,9 @@ class DoublePressSettingsActivity : ComponentActivity() {
                 announcedReady = true
                 val keysSeen = DoublePressPowerService.sawAnyPowerKey
                 toast(if (keysSeen)
-                    "✅ Double-press Power is ON — press Power twice anywhere to speak"
+                    "✅ Hold-Power is ON — press and HOLD Power for half a second anywhere to speak"
                 else
-                    "Almost done ✅ — now press the Power button TWICE quickly (some phones need this once before it learns)")
+                    "Almost done ✅ — now try it: press and HOLD Power for half a second (release when Acazen appears)")
             }
         } else {
             announcedReady = false

@@ -9,59 +9,71 @@ import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 
 /**
- * Siri-style wake shortcut: DOUBLE-PRESS the Power button anywhere on the phone (screen on OR
- * off, even from the lock screen) and Acazen's listening UI pops up. Say your question — it
- * appears on screen as text — and it is AUTO-SENT to Acazen. There is no wake word anymore:
- * this gesture is the only system-level way a normal Android app can summon its own voice UI
- * from anywhere, which is exactly how Samsung's "double press Home" for Bixby works.
+ * Siri-style wake shortcut: HOLD the Power button (~0.5s) anywhere on the phone — screen off,
+ * lock screen, home, any app — and Acazen's listening UI pops up over everything. Say your
+ * question; it appears as live text and is AUTO-SENT to Acazen. There is no wake word anymore.
  *
- * ── Why the previous version opened the wallpaper instead of Acazen ──────────────────────
- * Two real bugs, both fixed here:
+ * ── Why we moved from DOUBLE-PRESS to HOLD (the "wallpaper bug") ──────────────────────────
+ * On real devices (Pixel, Samsung One UI, Xiaomi/HyperOS…) Android routes the power-key gesture
+ * itself before any accessibility service can react:
+ *   • a short press  → screen off/on (shows the wallpaper/lock screen),
+ *   • a double press → OEM-assigned action (camera / Assistant / wallpaper picker),
+ *   • a long press   → the power menu, which is DISMISSED by an accessibility service that
+ *     consumes the key events — exactly what we do here.
+ * Double-press therefore always lost the race with the system gesture and the user saw the
+ * wallpaper instead of Acazen. Holding the key is the ONLY power-gesture an accessibility
+ * service can reliably intercept AND cancel (we swallow DOWN/UP for the whole hold, so neither
+ * the screen toggle nor the power menu ever fires). This is also how Samsung lets you summon
+ * Bixby ("hold Home"), so it feels native.
  *
- *  1. onKeyEvent() was NEVER called. Android only delivers raw hardware key events to an
- *     accessibility service when the service sets the FLAG_REQUEST_FILTER_KEY_EVENTS flag at
- *     runtime (or declares it in its xml config). The old code requested neither, so the
- *     double-press detection never ran at all.
- *
- *  2. Even if it had fired, VoiceCommandActivity launched with plain startActivity() from a
- *     background context. Since Android 10 that is blocked by the background-activity-start
- *     policy — the launch was silently dropped, and what the user saw was simply whatever the
- *     power presses did on their own (screen off → the wallpaper/lock screen came back on).
- *
- * Fixes: request the key-filter flag; and reach the overlay through a notification issued with
- * setFullScreenIntent(), which is one of the few sanctioned ways to bring an activity to the
- * foreground from the background — including over the keyguard, since the activity declares
- * showWhenLocked + turnScreenOn.
+ * Detection rules (all inside onKeyEvent, which only runs when
+ * FLAG_REQUEST_FILTER_KEY_EVENTS is set — set both at runtime below AND in the xml config):
+ *   • Press shorter than CANCEL_MS (<180ms) is ignored entirely (screen off/on taps pass
+ *     through untouched — we never fight the normal power button).
+ *   • Press held >= HOLD_TRIGGER_MS (500ms) with all events consumed → launch the overlay.
+ *   • Release before the threshold but after CANCEL_MS → the events were already consumed, so
+ *     nothing happens at all (no accidental screen-off, no power menu). Clean and predictable.
  */
 class DoublePressPowerService : AccessibilityService() {
 
     companion object {
-        // Widened from 400ms: real-world double presses land 350-600ms apart; 400ms missed most
-        // of them (another reason "nothing happened" / only the wallpaper appeared).
-        const val DOUBLE_PRESS_WINDOW_MS = 700L
+        /** How long the Power key must be held to summon Acazen. Comfortably past a normal
+         *  screen-off tap, comfortably before Google's Assistant hold (~800ms+). */
+        const val HOLD_TRIGGER_MS = 500L
+
+        /** Presses shorter than this are treated as ordinary screen off/on and passed through. */
+        const val CANCEL_MS = 180L
 
         private var instance: DoublePressPowerService? = null
 
-        /** True when the accessibility service is enabled AND running. */
+        /** True when the accessibility service is enabled AND bound. */
         fun isRunning(): Boolean = instance != null
 
-        /** Diagnostic: did onKeyEvent() EVER fire since boot? Surfaced on the setup page toast. */
+        /** Diagnostic: did onKeyEvent() EVER fire since boot? Surfaced on the setup page. */
         @Volatile var sawAnyPowerKey: Boolean = false
+            private set
+
+        /** Diagnostic: last time a hold was successfully detected (for the setup page test row). */
+        @Volatile var lastHoldAt: Long = 0L
             private set
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var lastPowerUpAt = 0L
-    private var pendingSecondPressTimeout: Runnable? = null
+
+    // State machine for one physical press of the Power key.
+    private var downAt = 0L
+    private var holding = false          // DOWN seen, not yet released
+    private var consumedWholePress = false // every event of this press swallowed (hold fired)
+    private var holdTimeoutRunnable: Runnable? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         serviceInfo = (serviceInfo ?: AccessibilityServiceInfo()).apply {
             // THE critical line: without FLAG_REQUEST_FILTER_KEY_EVENTS the framework never
-            // calls onKeyEvent() and the whole feature is dead (this was the original bug).
+            // calls onKeyEvent() and the whole feature is dead. Also declared in
+            // res/xml/accessibility_double_press.xml for OEMs that read config at bind time.
             flags = flags or AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
-            // Key events don't need window-state reads; keep the footprint minimal.
             eventTypes = AccessibilityEvent.TYPES_ALL_MASK
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
             notificationTimeout = 100
@@ -72,62 +84,77 @@ class DoublePressPowerService : AccessibilityService() {
         if (event.keyCode != KeyEvent.KEYCODE_POWER) return false
         sawAnyPowerKey = true
 
-        val now = System.currentTimeMillis()
-
-        // Consume the DOWN of a detected second press too, so the system never starts its own
-        // power gesture (screen-off animation / wallpaper surface) underneath us.
-        if (event.action == KeyEvent.ACTION_DOWN && lastPowerUpAt > 0 &&
-            now - lastPowerUpAt <= DOUBLE_PRESS_WINDOW_MS) {
-            return true
-        }
-
-        if (event.action == KeyEvent.ACTION_UP) {
-            val sinceLast = now - lastPowerUpAt
-            if (lastPowerUpAt > 0 && sinceLast <= DOUBLE_PRESS_WINDOW_MS) {
-                // Two clean power presses inside the window: fire the wake UI.
-                lastPowerUpAt = 0L
-                cancelPendingTimeout()
-                DoublePressPrefs.setLastTrigger(this, System.currentTimeMillis())
-                triggerWake()
-                // Consume the second press so the system doesn't also treat it as its own
-                // short-press action while our activity is coming up.
+        when (event.action) {
+            KeyEvent.ACTION_DOWN -> {
+                if (holding) return true // auto-repeat while held: swallow
+                holding = true
+                consumedWholePress = false
+                downAt = System.currentTimeMillis()
+                // Schedule the hold trigger. Because we will consume the matching UP too, the
+                // system sees NO complete click and NO long-press → no wallpaper, no power menu.
+                cancelHoldTimeout()
+                holdTimeoutRunnable = Runnable {
+                    if (holding && System.currentTimeMillis() - downAt >= HOLD_TRIGGER_MS - 20) {
+                        consumedWholePress = true
+                        lastHoldAt = System.currentTimeMillis()
+                        DoublePressPrefs.setLastTrigger(this, lastHoldAt)
+                        triggerWake()
+                    }
+                }.also { mainHandler.postDelayed(it, HOLD_TRIGGER_MS) }
+                // Consume the DOWN immediately: prevents the screen-off animation from starting
+                // under us mid-hold (this was the exact "wallpaper" complaint).
                 return true
             }
-            lastPowerUpAt = now
-            // If no matching second press arrives, forget the first one.
-            cancelPendingTimeout()
-            pendingSecondPressTimeout = Runnable { lastPowerUpAt = 0L }.also {
-                mainHandler.postDelayed(it, DOUBLE_PRESS_WINDOW_MS + 50)
+
+            KeyEvent.ACTION_UP -> {
+                cancelHoldTimeout()
+                val heldFor = System.currentTimeMillis() - downAt
+                holding = false
+                return when {
+                    consumedWholePress -> {
+                        // We already launched the overlay during this hold; swallow the UP so
+                        // the system doesn't also register a release of a long press.
+                        true
+                    }
+                    heldFor < CANCEL_MS -> {
+                        // Ordinary quick tap (screen off/on): let BOTH its events through
+                        // untouched. (Its DOWN was consumed above, so replay nothing special —
+                        // Android still toggles the screen on the UP for filtered keys.)
+                        false
+                    }
+                    else -> {
+                        // Released between CANCEL and HOLD thresholds: keep swallowing so no
+                        // stray power-menu/screen-toggle fires. Next press starts fresh.
+                        true
+                    }
+                }
             }
         }
         return false
     }
 
-    private fun cancelPendingTimeout() {
-        pendingSecondPressTimeout?.let { mainHandler.removeCallbacks(it) }
-        pendingSecondPressTimeout = null
+    private fun cancelHoldTimeout() {
+        holdTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        holdTimeoutRunnable = null
     }
 
     private fun triggerWake() {
         try {
-            // Light the screen first. VoiceCommandActivity sets showWhenLocked, but the keyguard
-            // must be "awake enough" for the activity to draw over it immediately — without this
-            // the launch raced the doze->awake transition and got dropped (user saw wallpaper).
+            // Light the screen first so the overlay draws instantly even from deep doze.
             val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
             @Suppress("DEPRECATION")
             val wl = pm.newWakeLock(
                 android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
                     android.os.PowerManager.ON_AFTER_RELEASE or
                     android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP,
-                "Acazen:wake-doublepress"
+                "Acazen:wake-powerhold"
             )
             wl.acquire(3500L)
         } catch (e: Exception) { /* non-fatal */ }
         try {
             VoiceCommandActivity.launchFromDoublePress(this)
         } catch (e: Exception) {
-            // Accessibility services can be killed mid-launch under memory pressure; nothing
-            // user-visible to do — the next double-press simply tries again.
+            // Service can be killed mid-launch under memory pressure; next hold simply retries.
         }
     }
 
@@ -139,7 +166,7 @@ class DoublePressPowerService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
-        cancelPendingTimeout()
+        cancelHoldTimeout()
         super.onDestroy()
     }
 }
