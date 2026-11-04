@@ -44,6 +44,25 @@ class VoiceCommandActivity : ComponentActivity() {
         const val ACTION_VOICE_COMMAND = "com.acazen.app.action.VOICE_COMMAND"
         const val EXTRA_VOICE_TEXT = "voice_text"
 
+        // Test mode: launched from the Double-press Power setup page ("Try it right now") so the
+        // user can rehearse the exact overlay before ever pressing the button. Same UI, same
+        // recognizer — proves end-to-end that mic + speech service work on this device.
+        const val ACTION_TEST = "com.acazen.app.action.DOUBLE_PRESS_TEST"
+
+        /** Open the listening overlay in rehearsal mode (from the setup page's "Try it"). */
+        fun launchTest(context: Context) {
+            context.startActivity(
+                Intent(context, VoiceCommandActivity::class.java).apply {
+                    action = ACTION_TEST
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    )
+                }
+            )
+        }
+
         // How long we let one utterance run before forcing a send (safety net if the
         // recognizer never reports end-of-speech).
         private const val MAX_LISTEN_MS = 8000L
@@ -64,6 +83,14 @@ class VoiceCommandActivity : ComponentActivity() {
          * declares showWhenLocked + turnScreenOn so it draws over the keyguard too). We post it
          * AND still try a direct start as a fast path for when the app happens to have a valid
          * background start right now (e.g. screen on, foreground-ish) so it feels instant.
+         */
+        /**
+         * Ensure the accessibility service actually receives raw hardware key events.
+         * Some OEM builds (MIUI/HyperOS especially) only wire onKeyEvent() when the flag is
+         * already present at bind time; we can't set it ourselves, but toggling nothing here —
+         * instead we surface a clear diagnostic via the notification path below if the gesture
+         * never fires. Kept as documentation of the requirement; the real fix lives in
+         * DoublePressPowerService.onServiceConnected() + the xml config.
          */
         fun launchFromDoublePress(context: Context) {
             val tap = Intent(context, VoiceCommandActivity::class.java).apply {
@@ -152,9 +179,10 @@ class VoiceCommandActivity : ComponentActivity() {
 
         setContentView(buildUi())
 
-        // If something launched us without wanting dictation (e.g. the old wake-word hop),
-        // just forward to the app in voice mode.
-        if (intent?.action != ACTION_VOICE_COMMAND) {
+        val isTest = intent?.action == ACTION_TEST
+
+        // If something launched us without wanting dictation, just forward to the app.
+        if (!isTest && intent?.action != ACTION_VOICE_COMMAND) {
             handOff(text = null)
             return
         }
@@ -164,12 +192,20 @@ class VoiceCommandActivity : ComponentActivity() {
         val recognizerAvailable = SpeechRecognizer.isRecognitionAvailable(this)
 
         when {
-            !recognizerAvailable -> failGracefully("Voice recognition isn't available on this device")
+            !recognizerAvailable -> {
+                if (isTest) showTestResult("✗ This phone has no built-in voice recognition. Install Google app or use another assistant-capable ROM.")
+                else failGracefully("Voice recognition isn't available on this device")
+            }
             !micGranted -> {
-                // Double-press fired before the user ever granted the mic (e.g. they enabled
-                // this shortcut but not "Hey Acazen"). Open the app so its toggle flow can ask;
-                // never silently swallow the gesture.
-                failGracefully("Tap the mic button in Acazen to allow voice input")
+                if (isTest) {
+                    showTestResult("✗ Microphone not allowed yet — tap step 1 on the setup page first.")
+                } else {
+                    // Deep bug fix #2: previously the gesture opened Acazen WITHOUT the mic and
+                    // dead-ended with a toast nobody read. Now it routes to the dedicated setup
+                    // page so the user finishes granting permissions instead of seeing wallpaper.
+                    DoublePressSettingsActivity.launch(this)
+                    finish()
+                }
             }
             else -> beginListening()
         }
@@ -340,11 +376,26 @@ class VoiceCommandActivity : ComponentActivity() {
         mainHandler.postDelayed({ handOff(text = null) }, 1200)
     }
 
+    private fun showTestResult(msg: String) {
+        pulseDot.animate().cancel()
+        statusText.text = msg
+        transcriptText.text = ""
+        mainHandler.postDelayed({ if (!isFinishing) finish() }, 2600)
+    }
+
     /** Auto-send: open Acazen in voice mode carrying the spoken text, then vanish. */
     private fun handOff(text: String?) {
         if (sent) return
         sent = true
         pulseDot.animate().cancel()
+
+        if (intent?.action == ACTION_TEST) {
+            // Rehearsal mode: show what we heard right here so the user gets instant feedback.
+            statusText.text = if (text != null) "✓ Heard: \"$text\" — the gesture works!" else "✗ Didn't catch that — try again from the setup page."
+            mainHandler.postDelayed({ if (!isFinishing) finish() }, 2800)
+            return
+        }
+
         statusText.text = if (text != null) "Sending to Acazen…" else "Opening Acazen…"
 
         mainHandler.postDelayed({

@@ -2,6 +2,7 @@ package com.acazen.app
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.view.KeyEvent
@@ -35,12 +36,18 @@ import android.view.accessibility.AccessibilityEvent
 class DoublePressPowerService : AccessibilityService() {
 
     companion object {
-        const val DOUBLE_PRESS_WINDOW_MS = 400L
+        // Widened from 400ms: real-world double presses land 350-600ms apart; 400ms missed most
+        // of them (another reason "nothing happened" / only the wallpaper appeared).
+        const val DOUBLE_PRESS_WINDOW_MS = 700L
 
         private var instance: DoublePressPowerService? = null
 
         /** True when the accessibility service is enabled AND running. */
         fun isRunning(): Boolean = instance != null
+
+        /** Diagnostic: did onKeyEvent() EVER fire since boot? Surfaced on the setup page toast. */
+        @Volatile var sawAnyPowerKey: Boolean = false
+            private set
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -63,8 +70,16 @@ class DoublePressPowerService : AccessibilityService() {
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode != KeyEvent.KEYCODE_POWER) return false
+        sawAnyPowerKey = true
 
         val now = System.currentTimeMillis()
+
+        // Consume the DOWN of a detected second press too, so the system never starts its own
+        // power gesture (screen-off animation / wallpaper surface) underneath us.
+        if (event.action == KeyEvent.ACTION_DOWN && lastPowerUpAt > 0 &&
+            now - lastPowerUpAt <= DOUBLE_PRESS_WINDOW_MS) {
+            return true
+        }
 
         if (event.action == KeyEvent.ACTION_UP) {
             val sinceLast = now - lastPowerUpAt
@@ -72,6 +87,7 @@ class DoublePressPowerService : AccessibilityService() {
                 // Two clean power presses inside the window: fire the wake UI.
                 lastPowerUpAt = 0L
                 cancelPendingTimeout()
+                DoublePressPrefs.setLastTrigger(this, System.currentTimeMillis())
                 triggerWake()
                 // Consume the second press so the system doesn't also treat it as its own
                 // short-press action while our activity is coming up.
@@ -93,6 +109,20 @@ class DoublePressPowerService : AccessibilityService() {
     }
 
     private fun triggerWake() {
+        try {
+            // Light the screen first. VoiceCommandActivity sets showWhenLocked, but the keyguard
+            // must be "awake enough" for the activity to draw over it immediately — without this
+            // the launch raced the doze->awake transition and got dropped (user saw wallpaper).
+            val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            @Suppress("DEPRECATION")
+            val wl = pm.newWakeLock(
+                android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                    android.os.PowerManager.ON_AFTER_RELEASE or
+                    android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                "Acazen:wake-doublepress"
+            )
+            wl.acquire(3500L)
+        } catch (e: Exception) { /* non-fatal */ }
         try {
             VoiceCommandActivity.launchFromDoublePress(this)
         } catch (e: Exception) {

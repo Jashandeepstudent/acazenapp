@@ -15,6 +15,10 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Lets the voice overlay dismiss an INSECURE keyguard (pattern/PIN-less) after the
+         double-press wakes the phone; secure locks still require the user's own unlock. -->
+    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
     <application
         android:name=".AcazenApplication"
@@ -40,6 +44,16 @@
         <!-- The dedicated double-press-Power page: Safari-style "Listening…" overlay that
              shows what the user says and AUTO-SENDS it to Acazen. Draws over the keyguard and
              lights the screen; excluded from Recents so it's a pure transient overlay. -->
+        <!-- THE dedicated setup page for the double-press Power shortcut: animated 3-step
+             checklist (mic -> accessibility -> live test), honest state read from system
+             settings, and OEM troubleshooting guidance. Opened from the website sheet toggle. -->
+        <activity
+            android:name=".DoublePressSettingsActivity"
+            android:exported="false"
+            android:label="Double-press Power"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Acazen" />
+
         <activity
             android:name=".VoiceCommandActivity"
             android:exported="false"

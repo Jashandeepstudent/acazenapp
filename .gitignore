@@ -1,5 +1,3 @@
-.kotlin/
-*.salive
-*.patch
-*.bundle
-prwork/
+node_modules/
+AcazenApp/build/
+AcazenApp/app/build/
