@@ -173,38 +173,44 @@ class MainActivity : AppCompatActivity() {
         fun disable() {}
 
         // ---- hold-Power voice shortcut (Siri-style) --------------------------------------
-        // THE wake feature now: Settings > "Hold Power Voice". Uses Android's built-in speech
-        // recognizer behind a dedicated overlay page (VoiceCommandActivity), so it needs NO
-        // always-on mic service and costs zero battery — the gesture summons the listening UI
-        // on demand, from the lock screen included.
+        // THE wake feature now: Settings > "Hold Power for Acazen". Acazen registers as the
+        // device's Digital Assistant app (RoleManager.ROLE_ASSISTANT) so the SYSTEM itself
+        // routes its native power-button-hold-for-assistant gesture straight to
+        // AcazenInteractionSession — no key interception, no accessibility service, and it
+        // costs zero battery (nothing runs until the gesture fires, lock screen included).
 
         @JavascriptInterface
-        fun isDoublePressSupported(): Boolean = true
+        fun isDoublePressSupported(): Boolean =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
-        // TRUE source of truth: reads Settings.Secure for our service (not just the running
-        // instance pointer, which lags while Android rebinds and made an ON feature show OFF —
-        // the "setting never saves" bug). Also refreshes the local mirror pref.
+        // TRUE source of truth: RoleManager.isRoleHeld(), read fresh every call (never cached —
+        // that's what caused the old "setting never saves" bug with the accessibility toggle).
+        // Also refreshes the local mirror pref the web UI can read without a bridge round-trip.
         @JavascriptInterface
         fun isDoublePressServiceOn(): Boolean {
-            val on = DoublePressPrefs.isServiceEnabledInSettings(this@MainActivity) ||
-                DoublePressPowerService.isRunning()
+            val on = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    getSystemService(android.app.role.RoleManager::class.java)
+                        ?.isRoleHeld(android.app.role.RoleManager.ROLE_ASSISTANT) ?: false
+                } catch (e: Exception) { false }
+            } else false
             DoublePressPrefs.setEnabled(this@MainActivity, on)
             return on
         }
 
-        // Opens the dedicated native setup page (animated step checklist: mic -> accessibility
-        // -> live test). The website sheet now routes here instead of doing its own half-flow.
+        // Opens the dedicated native setup page (animated step checklist: mic -> make Acazen
+        // the Assistant). The website sheet routes here instead of doing its own half-flow.
         @JavascriptInterface
         fun openDoublePressSetup() {
-            runOnUiThread { DoublePressSettingsActivity.launch(this@MainActivity) }
+            runOnUiThread { AssistantSetupActivity.launch(this@MainActivity) }
         }
 
         @JavascriptInterface
         fun enableDoublePress() {
             runOnUiThread {
-                // Don't fake-enable a pref that can't be honored (accessibility must be flipped
-                // by the user in system UI). Route them to the guided native setup page.
-                DoublePressSettingsActivity.launch(this@MainActivity)
+                // Don't fake-enable a pref that can't be honored (the Assistant role must be
+                // granted by the user via the system role dialog). Route to the guided setup page.
+                AssistantSetupActivity.launch(this@MainActivity)
             }
         }
 
@@ -212,60 +218,16 @@ class MainActivity : AppCompatActivity() {
         fun disableDoublePress() {
             runOnUiThread {
                 DoublePressPrefs.setEnabled(this@MainActivity, false)
-                // We can't programmatically uncheck an accessibility service (Android forbids
-                // it); deep-link straight to OUR service's detail toggle this time (previously
-                // it dumped users on the generic list where they couldnt find Acazen -> looked
-                // like nothing saved).
+                // Android has no API for an app to give up a role on the user's behalf; send
+                // them to the picker where they can choose a different default assistant.
                 try {
                     startActivity(
-                        Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS")
-                            .putExtra(":settings:fragment_args_key",
-                                packageName + "/" + packageName + ".DoublePressPowerService")
+                        Intent(android.provider.Settings.ACTION_VOICE_INPUT_SETTINGS)
                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     )
                 } catch (e: Exception) {
-                    openAccessibilitySettings()
                 }
             }
-        }
-
-        private fun openAccessibilitySettings() {
-            try {
-                startActivity(
-                    Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-            } catch (e: Exception) {
-            }
-        }
-    }
-
-    private fun beginEnableDoublePress() {
-        // The overlay needs the mic to transcribe what you say after the gesture. Ask once,
-        // up front, so the hold gesture never dead-ends later on a missing permission. Then send
-        // the user to Accessibility settings to finish (Android can't grant that for us).
-        val micGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
-            PackageManager.PERMISSION_GRANTED
-        if (!micGranted) {
-            doublePressMicPermission.launch(Manifest.permission.RECORD_AUDIO)
-            return
-        }
-        openAccessibilitySettingsFromActivity()
-    }
-
-    private val doublePressMicPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-            // Open Settings either way: if they denied the mic the overlay still opens Acazen
-            // (it just can't dictate), and they can retry from the toggle later.
-            openAccessibilitySettingsFromActivity()
-        }
-
-    private fun openAccessibilitySettingsFromActivity() {
-        try {
-            startActivity(
-                Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            )
-        } catch (e: Exception) {
         }
     }
 

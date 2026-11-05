@@ -1,6 +1,7 @@
 package com.acazen.app
 
 import android.Manifest
+import android.app.role.RoleManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -9,12 +10,7 @@ import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.provider.Settings
-import android.text.method.LinkMovementMethod
-import android.text.SpannableString
-import android.text.style.ClickableSpan
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -28,52 +24,48 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 
 /**
- * THE dedicated, beautiful setup page for the hold-Power wake shortcut.
+ * THE setup page for Acazen's hold-Power voice shortcut — replaces the old
+ * DoublePressSettingsActivity, which drove an AccessibilityService that could never actually
+ * see the Power key (see AcazenInteractionService's doc comment for the full explanation).
  *
- * It replaces the old "toggle inside the website sheet" flow, which had two real bugs:
+ * This page does the one thing that actually makes "hold Power → Acazen" work: ask the user to
+ * make Acazen their device's registered Digital Assistant app
+ * (RoleManager.ROLE_ASSISTANT). Once granted, the OS itself — not Acazen — owns the power-button
+ * gesture and routes it straight to AcazenInteractionSession.
  *
- *  1. The web toggle only wrote an app-side preference and jumped to the system Accessibility
- *     list — nothing ever confirmed completion, so it LOOKED like the setting never saved.
- *  2. VoiceCommandActivity refused to listen when RECORD_AUDIO wasn't granted yet (the gesture
- *     then fell through to whatever the OEM maps double-Power to — wallpaper/camera).
- *
- * This page drives the whole thing natively with an animated step checklist:
- *     Step 1 — Microphone permission   (one-tap runtime dialog)
- *     Step 2 — Accessibility service   (deep-links straight to OUR service's detail screen;
- *                                       state is read from Settings.Secure, not just from the
- *                                       running instance, so it survives service restarts)
- *     Step 3 — Try it                  (live test overlay right here — proves the gesture works
- *                                       before the user ever locks the phone)
- * Every step re-checks itself on resume and animates a green check in when satisfied, so the
- * state is always honest and visibly "saved".
+ * Same two-honest-truths design as before:
+ *   1. RoleManager.createRequestRoleIntent(ROLE_ASSISTANT) does not always show a confirmation
+ *      dialog on every OEM build; the reliable fallback is deep-linking to
+ *      Settings.ACTION_VOICE_INPUT_SETTINGS ("Default apps › Assist & voice input") and
+ *      re-checking isRoleHeld() when the user comes back — exactly like the old page re-checked
+ *      Settings.Secure for the accessibility toggle.
+ *   2. State is always polled fresh from RoleManager on resume, never assumed from a click, so
+ *      the page can never silently lie about whether the shortcut is actually live.
  */
-class DoublePressSettingsActivity : ComponentActivity() {
+class AssistantSetupActivity : ComponentActivity() {
 
     companion object {
-        /** Entry point used by the website bridge (MainActivity) and the notification. */
         fun launch(context: Context) {
             context.startActivity(
-                Intent(context, DoublePressSettingsActivity::class.java)
+                Intent(context, AssistantSetupActivity::class.java)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             )
         }
-
-        private const val ACC_SETTINGS_ACTION = "android.settings.ACCESSIBILITY_DETAILS_SETTINGS"
     }
 
-    private val mainHandler = Handler(Looper.getMainLooper())
-
-    // Step rows + their status pills, rebuilt once and updated in place.
     private lateinit var micPill: TextView
-    private lateinit var accPill: TextView
+    private lateinit var assistantPill: TextView
     private lateinit var testPill: TextView
     private lateinit var primaryButton: Button
     private lateinit var stepList: LinearLayout
-    private var lastTestAt = 0L
+    private var announcedReady = false
     private var testedOkOnce = false
 
     private val micPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { refresh(animated = true) }
+
+    private val roleRequestLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { refresh(animated = true) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -81,7 +73,6 @@ class DoublePressSettingsActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         refresh(animated = false)
 
-        // Staggered entrance: hero + each step card fades/slides in one after another.
         var delay = 0L
         for (i in 0 until stepList.childCount) {
             val child = stepList.getChildAt(i)
@@ -94,15 +85,9 @@ class DoublePressSettingsActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // User may have flipped the accessibility switch while we were paused in Settings —
-        // re-read everything the moment they come back. THIS is what makes the toggle finally
-        // appear to "save": truth is polled from the system, not remembered from a click.
+        // The user may have granted/changed the assistant role or permission while we were
+        // paused in system Settings — re-read everything the moment they come back.
         refresh(animated = true)
-    }
-
-    override fun onDestroy() {
-        mainHandler.removeCallbacksAndMessages(null)
-        super.onDestroy()
     }
 
     // ---- state -------------------------------------------------------------------------------
@@ -111,54 +96,63 @@ class DoublePressSettingsActivity : ComponentActivity() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
-    /**
-     * Authoritative enabled-state of our accessibility service, read from secure settings.
-     * `DoublePressPowerService.isRunning()` alone was flaky (the instance pointer can lag or be
-     * cleared while Android rebinds the service), which made an ON feature show as OFF.
-     */
-    private fun accessibilityOn(): Boolean =
-        DoublePressPrefs.isServiceEnabledInSettings(this) || DoublePressPowerService.isRunning()
+    private fun roleManager(): RoleManager? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+            getSystemService(RoleManager::class.java) else null
+
+    private fun roleAvailable(): Boolean =
+        roleManager()?.isRoleAvailable(RoleManager.ROLE_ASSISTANT) ?: false
+
+    private fun assistantOn(): Boolean =
+        roleManager()?.isRoleHeld(RoleManager.ROLE_ASSISTANT) ?: false
 
     // ---- actions -----------------------------------------------------------------------------
 
     private fun requestMic() = micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
 
     /**
-     * Deep-link directly to OUR service's own toggle screen inside system Settings
-     * (Android 7+). Falling back to the plain accessibility list keeps older/OEM builds working.
+     * Requests ROLE_ASSISTANT. On builds where the role dialog doesn't appear, this call still
+     * opens something useful (often the default-apps picker directly); either way onResume()
+     * re-checks isRoleHeld() so the step always ends up honest about what actually happened.
      */
-    private fun openAccessibilityDetail() {
+    private fun requestAssistantRole() {
+        val rm = roleManager()
+        if (rm == null || !roleAvailable()) {
+            openVoiceInputSettings()
+            return
+        }
         try {
-            val id = "$packageName/$packageName.DoublePressPowerService"
-            val intent = Intent(ACC_SETTINGS_ACTION).apply {
-                putExtra(":settings:fragment_args_key", id) // legacy SystemUI arg
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            // Some OEMs key off these instead:
-            intent.putExtra("key", id)
-            intent.putExtra(":settings:show_fragment_args_key", id)
-            if (intent.resolveActivity(packageManager) != null) {
-                startActivity(intent)
-                return
-            }
-        } catch (e: Exception) { /* fall through */ }
-        try {
-            startActivity(
-                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
+            roleRequestLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT))
         } catch (e: Exception) {
-            toast("Open Settings > Accessibility > Installed apps > Acazen manually")
+            openVoiceInputSettings()
         }
     }
 
-    /**
-     * Live gesture rehearsal INSIDE this page: shows the exact same listening overlay the
-     * double-press will summon (VoiceCommandActivity in TEST mode). If the user can complete it
-     * here, the real gesture is guaranteed to work too — no more guessing why "nothing happens".
-     */
+    /** Fallback / manual path: "Default apps › Assist & voice input" lets the user pick
+     *  Acazen directly even on OEM builds where the role-request dialog misbehaves. */
+    private fun openVoiceInputSettings() {
+        try {
+            startActivity(
+                Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } catch (e: Exception) {
+            try {
+                startActivity(
+                    Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                toast("Open Settings › Apps › Default apps › Assist & voice input, then choose Acazen")
+            } catch (ignored: Exception) {
+                toast("Open Settings › Apps › Default apps › Assist & voice input, then choose Acazen")
+            }
+        }
+    }
+
+    /** Live gesture rehearsal: shows the exact same listening overlay the real gesture will
+     *  summon (VoiceCommandActivity in TEST mode), so the user can confirm mic + recognizer
+     *  work on this device before trusting the Power-hold gesture itself. */
     private fun runLiveTest() {
-        lastTestAt = System.currentTimeMillis()
+        testedOkOnce = true
         testPill.text = "Testing…"
         testPill.setBackgroundColor(Color.parseColor("#FFF7E6"))
         testPill.setTextColor(Color.parseColor("#B76E00"))
@@ -188,7 +182,6 @@ class DoublePressSettingsActivity : ComponentActivity() {
             setBackgroundColor(Color.parseColor("#F3F7FC"))
         }
 
-        // Status bar space (edge-to-edge look without the library): a colored spacer.
         val spacerTop = View(this)
         bg.addView(spacerTop, lp(w = -1, h = statusBarPx()))
 
@@ -200,7 +193,6 @@ class DoublePressSettingsActivity : ComponentActivity() {
         scroll.addView(col)
         bg.addView(scroll, lp(w = -1, h = -2))
 
-        // Hero ------------------------------------------------------------------
         val heroIcon = TextView(this).apply {
             text = "⏻"
             textSize = 26f
@@ -210,22 +202,19 @@ class DoublePressSettingsActivity : ComponentActivity() {
             background = rounded("#E8F0FE", 22)
         }
         val heroWrap = FrameLayout(this)
-        heroWrap.addView(
-            heroIcon,
-            FrameLayout.LayoutParams(dp(76), dp(76), Gravity.CENTER)
-        )
+        heroWrap.addView(heroIcon, FrameLayout.LayoutParams(dp(76), dp(76), Gravity.CENTER))
         col.addView(heroWrap, lp(w = -1, h = dp(96)))
 
-        col.addView(titleText("Hold Power button", 24f, "#112133", bold = true, top = 0))
+        col.addView(titleText("Hold Power for Acazen", 24f, "#112133", bold = true, top = 0))
         col.addView(bodyText(
-            "Wake Acazen anywhere, even on the lock screen — exactly like holding the Side button for Assistant. " +
-                "HOLD Power for ~" + (DoublePressPowerService.HOLD_TRIGGER_MS / 1000.0) + "s → Acazen pops up listening → say your question → it is sent automatically.",
+            "Wake Acazen anywhere, even on the lock screen — hold the Power button the same " +
+                "way you would for Google Assistant. Acazen pops up listening, you ask your " +
+                "question, and it's sent automatically.",
             top = 6
         ))
 
-        // Battery note card ------------------------------------------------------
         val note = TextView(this).apply {
-            text = "🔋  No always-on microphone. Nothing runs in the background until you press the button — zero battery drain."
+            text = "🔋  No always-on microphone. Nothing runs until you hold the button — zero battery drain."
             textSize = 12.5f
             setTextColor(Color.parseColor("#3C5A78"))
             setPadding(dp(14), dp(12), dp(14), dp(12))
@@ -233,38 +222,33 @@ class DoublePressSettingsActivity : ComponentActivity() {
         }
         col.addView(note, lp(w = -1, h = -2, top = 16))
 
-        // Steps ------------------------------------------------------------------
         col.addView(titleText("Set up in 3 steps", 15f, "#112133", bold = true, top = 26))
 
         micPill = pill("Not done", "#FDECEC", "#C5221F")
-        accPill = pill("Off", "#EEF2F7", "#5A7A9A")
+        assistantPill = pill("Off", "#EEF2F7", "#5A7A9A")
         testPill = pill("Ready", "#EEF2F7", "#5A7A9A")
 
         stepList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         stepList.addView(
-            stepRow(
-                "1", "Microphone access",
-                "Lets the overlay hear what you say.",
-                micPill
-            ) { if (!micGranted()) requestMic() else toast("Microphone already allowed ✅") }
+            stepRow("1", "Microphone access", "Lets the overlay hear what you say.", micPill)
+            { if (!micGranted()) requestMic() else toast("Microphone already allowed ✅") }
         )
         stepList.addView(
             stepRow(
-                "2", "Turn on the shortcut",
-                "Flip \"Acazen — Hold Power Voice\" ON in the screen that opens, then come back here.",
-                accPill
-            ) { openAccessibilityDetail() }
+                "2", "Make Acazen your Assistant",
+                "This is what makes the Power-hold gesture reach Acazen — it's the same system setting Google Assistant and Bixby use.",
+                assistantPill
+            ) { requestAssistantRole() }
         )
         stepList.addView(
             stepRow(
-                "3", "Try it right now",
-                "Opens the real listening overlay so you can feel it work before locking the phone.",
+                "3", "Try the overlay",
+                "Rehearses the exact listening screen so you can confirm mic + recognizer work here, before relying on the real gesture.",
                 testPill
             ) { runLiveTest() }
         )
         col.addView(stepList, lp(w = -1, h = -2, top = 8))
 
-        // Primary CTA --------------------------------------------------------------
         primaryButton = Button(this).apply {
             text = "Continue setup"
             textSize = 16f
@@ -276,34 +260,29 @@ class DoublePressSettingsActivity : ComponentActivity() {
         }
         col.addView(primaryButton, lp(w = -1, h = dp(54), top = 20))
 
-        // How it works ---------------------------------------------------------------
         col.addView(titleText("How it works", 15f, "#112133", bold = true, top = 30))
         col.addView(bodyText(
-            "① HOLD the Power button for about " + (DoublePressPowerService.HOLD_TRIGGER_MS / 1000.0) + " seconds (the screen stays as it is).\n" +
+            "① HOLD the Power button, same as you would for a phone's built-in assistant.\n" +
                 "② Acazen appears full-screen with a pulsing mic and writes what it hears.\n" +
                 "③ When you stop talking, the question is sent to Acazen by itself.",
             top = 8
         ))
 
-        // Troubleshooting -------------------------------------------------------------
-        col.addView(titleText("If holding Power still opens something else", 15f, "#112133", bold = true, top = 26))
+        col.addView(titleText("If holding Power still opens the power menu", 15f, "#112133", bold = true, top = 26))
         col.addView(bodyText(
-            "Some phones map long/held Power presses to their own features (power menu, Assistant, camera). " +
-                "Our service cancels the power menu automatically while enabled; if yours still shows one, turn these OFF:\n\n" +
-                "• Pixel / stock: Settings › System › Gestures › Power button › hold for Assistant = Off\n" +
+            "Make sure step 2 above shows “On”. Some phones also have their own " +
+                "assistant-gesture switch that needs to point at Acazen:\n\n" +
+                "• Pixel / stock: Settings › System › Gestures › Power button › hold for Assistant\n" +
                 "• Samsung: Settings › Advanced features › Side key\n" +
-                "• Xiaomi/Redmi: Settings › Always-on display & Lock screen / Extra settings\n" +
-                "• Then also disable any live wallpaper's \"tap/power gestures\": Settings › Wallpaper & style",
+                "• Xiaomi/Redmi: Settings › Apps › Default apps › Assist & voice input\n" +
+                "• Then also disable any live wallpaper's “tap/power gestures”: Settings › Wallpaper & style",
             top = 8
         ))
 
-        val oem = SpannableString("Open Acazen's app settings (battery: set to Unrestricted) →")
-        oem.setSpan(object : ClickableSpan() {
-            override fun onClick(widget: View) = openAppSettingsPage()
-        }, 0, oem.length, 0)
+        val oem = SpannableClick("Open Acazen's app settings (battery: set to Unrestricted) →") { openAppSettingsPage() }
         val oemLink = TextView(this).apply {
-            text = oem
-            movementMethod = LinkMovementMethod.getInstance()
+            text = oem.spannable
+            movementMethod = android.text.method.LinkMovementMethod.getInstance()
             setTextColor(Color.parseColor("#1A73E8"))
             textSize = 13f
             setPadding(0, dp(10), 0, 0)
@@ -313,21 +292,24 @@ class DoublePressSettingsActivity : ComponentActivity() {
         return bg
     }
 
-    private fun onPrimary() {
-        when {
-            !micGranted() -> requestMic()
-            !accessibilityOn() -> openAccessibilityDetail()
-            else -> runLiveTest()
+    private class SpannableClick(text: String, onClick: () -> Unit) {
+        val spannable = android.text.SpannableString(text).apply {
+            setSpan(object : android.text.style.ClickableSpan() {
+                override fun onClick(widget: View) = onClick()
+            }, 0, text.length, 0)
         }
     }
 
-    private fun stepRow(
-        num: String,
-        title: String,
-        desc: String,
-        pill: TextView,
-        onClick: () -> Unit
-    ): View {
+    private fun onPrimary() {
+        when {
+            !micGranted() -> requestMic()
+            !assistantOn() -> requestAssistantRole()
+            !testedOkOnce -> runLiveTest()
+            else -> toast("You're all set — try holding Power now 🎉")
+        }
+    }
+
+    private fun stepRow(num: String, title: String, desc: String, pillView: TextView, onClick: () -> Unit): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(16), dp(14), dp(16), dp(14))
@@ -358,7 +340,7 @@ class DoublePressSettingsActivity : ComponentActivity() {
 
         val pl = lp(w = -2, h = -2, margin = true)
         pl.gravity = Gravity.CENTER_VERTICAL
-        row.addView(pill, pl)
+        row.addView(pillView, pl)
         return row
     }
 
@@ -373,14 +355,13 @@ class DoublePressSettingsActivity : ComponentActivity() {
     }
 
     private fun titleText(t: String, size: Float, color: String, bold: Boolean, top: Int): TextView {
-        val v = TextView(this).apply {
+        return TextView(this).apply {
             text = t
             textSize = size
             if (bold) setTypeface(typeface, Typeface.BOLD)
             setTextColor(Color.parseColor(color))
             layoutParams = lp(w = -1, h = -2, top = top)
         }
-        return v
     }
 
     private fun bodyText(t: String, top: Int, size: Float = 14f) = TextView(this).apply {
@@ -425,64 +406,45 @@ class DoublePressSettingsActivity : ComponentActivity() {
 
     private fun refresh(animated: Boolean) {
         val mic = micGranted()
-        val acc = accessibilityOn()
-        val recentlyTested = System.currentTimeMillis() - lastTestAt < 60_000L
+        val assistant = assistantOn()
 
         setPill(micPill, if (mic) "Done ✓" else "Needed",
             if (mic) "#E6F4EA" else "#FDECEC", if (mic) "#137333" else "#C5221F", animated && mic)
-        setPill(accPill, if (acc) "On ✓" else "Off",
-            if (acc) "#E6F4EA" else "#EEF2F7", if (acc) "#137333" else "#5A7A9A", animated && acc)
-        val realFire = DoublePressPrefs.lastTriggerAt(this) > lastTestAt &&
-            System.currentTimeMillis() - DoublePressPrefs.lastTriggerAt(this) < 120_000L
-        setPill(testPill,
-            when {
-                realFire -> "Works ✓"
-                recentlyTested || testedOkOnce -> "Tried ✓"
-                else -> "Ready"
-            },
+        setPill(assistantPill, if (assistant) "On ✓" else "Off",
+            if (assistant) "#E6F4EA" else "#EEF2F7", if (assistant) "#137333" else "#5A7A9A", animated && assistant)
+        setPill(testPill, if (testedOkOnce) "Tried ✓" else "Ready",
             "#E6F4EA", "#137333", animate = false)
 
-        // Persist the combined outcome so the website sheet can show an honest On/Off.
-        DoublePressPrefs.setEnabled(this, acc)
+        DoublePressPrefs.setEnabled(this, mic && assistant)
 
         primaryButton.text = when {
             !mic -> "Allow microphone"
-            !acc -> "Turn on in Accessibility"
-            else -> "Try it: open the listening overlay"
+            !assistant -> "Make Acazen my Assistant"
+            !testedOkOnce -> "Try it: open the listening overlay"
+            else -> "All set — hold Power to try it"
         }
 
-        if (mic && acc) {
-            // Feature fully live — pop the confirmation once so it visibly "saved".
+        if (mic && assistant) {
             if (animated && !announcedReady) {
                 announcedReady = true
-                val keysSeen = DoublePressPowerService.sawAnyPowerKey
-                val heal = DoublePressPowerService.didSelfHeal
-                val holdSecs = DoublePressPowerService.HOLD_TRIGGER_MS / 1000.0
-                toast((if (keysSeen)
-                    "✅ Hold-Power is ON — press and HOLD Power for ~${holdSecs}s anywhere to speak"
-                else
-                    "Almost done ✅ — now try it: press and HOLD Power for ~${holdSecs}s (release when Acazen appears)")
-                    + (if (heal) "\n⚠️ MIUI blocked the gesture once — auto-repaired. If the power menu still appears, keep holding until Acazen pops (it cancels the menu)." else ""))
+                toast("✅ Hold-Power is ON — press and HOLD Power anywhere to speak to Acazen")
             }
         } else {
             announcedReady = false
         }
     }
 
-    private var announcedReady = false
-
-    private fun setPill(pill: TextView, text: String, bgHex: String, fgHex: String, animate: Boolean) {
-        val changed = pill.text != text
-        pill.text = text
-        pill.setBackgroundColor(Color.parseColor(bgHex))
-        pill.setTextColor(Color.parseColor(fgHex))
+    private fun setPill(pillView: TextView, text: String, bgHex: String, fgHex: String, animate: Boolean) {
+        val changed = pillView.text != text
+        pillView.text = text
+        pillView.setBackgroundColor(Color.parseColor(bgHex))
+        pillView.setTextColor(Color.parseColor(fgHex))
         if (animate && changed) {
-            pill.scaleX = 0.6f
-            pill.scaleY = 0.6f
-            pill.animate().scaleX(1f).scaleY(1f).setDuration(260).setInterpolator(
+            pillView.scaleX = 0.6f
+            pillView.scaleY = 0.6f
+            pillView.animate().scaleX(1f).scaleY(1f).setDuration(260).setInterpolator(
                 android.view.animation.OvershootInterpolator()
             ).start()
         }
     }
-
 }

@@ -1,14 +1,10 @@
 package com.acazen.app
 
 import android.Manifest
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -22,21 +18,21 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
-import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
 /**
- * The dedicated "hold Power" page: a Siri/Assistant-style listening overlay.
+ * Rehearsal-mode overlay ("Try it" on the setup page) for the hold-Power voice shortcut — same
+ * look and speech-recognition flow Acazen uses for the real thing, so the user can confirm mic +
+ * recognizer work on their phone before ever relying on the gesture itself.
  *
- * Flow (exactly what was asked for):
- *   1. User holds the Power button (~0.5s) anywhere on the phone (screen off included).
- *   2. THIS UI appears instantly over everything (showWhenLocked + turnScreenOn), with a big
- *      pulsing "Listening…" bubble.
- *   3. Whatever the user says appears there as live text (Android's built-in speech
- *      recognizer — no wake-word model, no always-on mic service; zero battery drain).
- *   4. When speech ends it is AUTO-SENT: MainActivity opens directly in Acazen voice mode
- *      (?voice=1) carrying the recognized text via ACTION_VOICE_COMMAND, and the site sends it
- *      to Acazen without any further taps.
+ * The REAL gesture no longer launches this Activity: since Acazen became the device's
+ * registered Assistant app (RoleManager.ROLE_ASSISTANT — see AssistantSetupActivity), the
+ * system itself invokes AcazenInteractionSession directly for the hold-Power gesture, which
+ * reuses this same UI/recognition logic hosted in a VoiceInteractionSession instead of an
+ * Activity (a plain startActivity() from the background is blocked by Android's
+ * background-activity-start policy on Android 10+, which is exactly why intercepting the key
+ * and launching an Activity by hand never worked reliably — the assistant-role path sidesteps
+ * that restriction entirely because the system does the launching).
  */
 class VoiceCommandActivity : ComponentActivity() {
 
@@ -67,96 +63,6 @@ class VoiceCommandActivity : ComponentActivity() {
         // recognizer never reports end-of-speech).
         private const val MAX_LISTEN_MS = 8000L
         private const val SENDING_HOLD_MS = 700L
-
-        private const val CHANNEL_ID = "acazen_wake"
-        private const val WAKE_NOTIFICATION_ID = 4211
-
-        /**
-         * Launch the overlay from the accessibility service while the app is in the background
-         * (or the screen is off).
-         *
-         * A plain startActivity() from a background context is silently BLOCKED by Android's
-         * background-activity-start policy (Android 10+) — that is exactly why the old build
-         * just woke the screen to the wallpaper instead of opening Acazen. The sanctioned way
-         * to bring an activity up from the background is a high-priority notification carrying
-         * a full-screen-intent PendingIntent (we hold USE_FULL_SCREEN_INTENT, and the activity
-         * declares showWhenLocked + turnScreenOn so it draws over the keyguard too). We post it
-         * AND still try a direct start as a fast path for when the app happens to have a valid
-         * background start right now (e.g. screen on, foreground-ish) so it feels instant.
-         */
-        /**
-         * Ensure the accessibility service actually receives raw hardware key events.
-         * Some OEM builds (MIUI/HyperOS especially) only wire onKeyEvent() when the flag is
-         * already present at bind time; we can't set it ourselves, but toggling nothing here —
-         * instead we surface a clear diagnostic via the notification path below if the gesture
-         * never fires. Kept as documentation of the requirement; the real fix lives in
-         * DoublePressPowerService.onServiceConnected() + the xml config.
-         */
-        fun launchFromDoublePress(context: Context) {
-            val tap = Intent(context, VoiceCommandActivity::class.java).apply {
-                action = ACTION_VOICE_COMMAND
-                addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                        Intent.FLAG_ACTIVITY_CLEAR_TOP
-                )
-            }
-
-            // Path A: full-screen-intent notification — works even from deep background /
-            // screen off, which is the whole point of the gesture.
-            try {
-                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    nm.createNotificationChannel(NotificationChannel(
-                        CHANNEL_ID, "Acazen voice shortcut",
-                        NotificationManager.IMPORTANCE_DEFAULT
-                    ).apply { setShowBadge(false) })
-                }
-                val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                else PendingIntent.FLAG_UPDATE_CURRENT
-                val pi = PendingIntent.getActivity(context, 0, tap, flags)
-                val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-                    .setSmallIcon(R.mipmap.ic_launcher)
-                    .setContentTitle("Acazen")
-                    .setContentText("Listening… speak now")
-                    .setPriority(NotificationCompat.PRIORITY_MAX)
-                    .setCategory(NotificationCompat.CATEGORY_CALL)
-                    .setAutoCancel(true)
-                    .setOngoing(false)
-                    .setContentIntent(pi)
-                    .build()
-                @Suppress("MissingPermission") // we don't need POST_NOTIFICATIONS to FSI-launch
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    // NotificationManager#notifyFullScreenIntent(int, Notification) is @hide in
-                    // the public SDK (does not resolve at compile time), so call it reflectively:
-                    // on Android 14+ this is what actually grants the background full-screen launch.
-                    var launched = false
-                    try {
-                        val m = nm.javaClass.getMethod(
-                            "notifyFullScreenIntent", Int::class.javaPrimitiveType,
-                            android.app.Notification::class.java
-                        )
-                        m.invoke(nm, WAKE_NOTIFICATION_ID, notification)
-                        launched = true
-                    } catch (e: Exception) {
-                    }
-                    if (!launched) nm.notify(WAKE_NOTIFICATION_ID, notification)
-                } else {
-                    nm.notify(WAKE_NOTIFICATION_ID, notification)
-                }
-            } catch (e: Exception) {
-                // Fall through to the direct attempt below.
-            }
-
-            // Path B: best-effort direct start (no-op if Android blocks it; harmless because
-            // the notification above already queued the same singleTop activity).
-            try {
-                tap.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_FROM_BACKGROUND)
-                context.startActivity(tap)
-            } catch (e: Exception) {
-            }
-        }
     }
 
     private var recognizer: SpeechRecognizer? = null
@@ -200,10 +106,9 @@ class VoiceCommandActivity : ComponentActivity() {
                 if (isTest) {
                     showTestResult("✗ Microphone not allowed yet — tap step 1 on the setup page first.")
                 } else {
-                    // Deep bug fix #2: previously the gesture opened Acazen WITHOUT the mic and
-                    // dead-ended with a toast nobody read. Now it routes to the dedicated setup
-                    // page so the user finishes granting permissions instead of seeing wallpaper.
-                    DoublePressSettingsActivity.launch(this)
+                    // Route to the setup page so the user finishes granting permissions instead
+                    // of seeing a dead-ended overlay with no way to dictate.
+                    AssistantSetupActivity.launch(this)
                     finish()
                 }
             }

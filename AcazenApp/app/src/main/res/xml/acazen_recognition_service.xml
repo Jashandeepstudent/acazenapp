@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Required alongside AcazenRecognitionService's manifest declaration. Points back at the
+     same setup screen; the service itself does no real recognition work (see
+     AcazenRecognitionService's doc comment for why that's correct). -->
+<recognition-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:settingsActivity="com.acazen.app.AssistantSetupActivity" />

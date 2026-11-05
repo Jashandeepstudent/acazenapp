@@ -11,8 +11,8 @@ android {
         applicationId 'com.CosmianGroupLtd.Acazen'
         minSdk 26
         targetSdk 36
-        versionCode 17
-        versionName '2.12.3'
+        versionCode 18
+        versionName '2.13.0'
     }
     signingConfigs {
         release {
@@ -49,7 +49,12 @@ dependencies {
     implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
     implementation 'com.airbnb.android:lottie:6.6.2'
 
-    // The "Hey Acazen" Vosk wake word was REMOVED in 2.12.0 — voice launch now happens via the
-    // double-press Power shortcut + Android's built-in SpeechRecognizer (VoiceCommandActivity),
-    // so the ~40MB Vosk model, vosk-android and JNA are gone from the bundle entirely.
+    // The "Hey Acazen" Vosk wake word was REMOVED in 2.12.0 — the ~40MB Vosk model, vosk-android
+    // and JNA are gone from the bundle entirely. Voice launch (2.13.0+) happens by Acazen
+    // registering as the device's Assistant app (RoleManager.ROLE_ASSISTANT) so the system's own
+    // hold-Power gesture opens it — see AcazenInteractionService. Needs no extra library: it's
+    // built on android.service.voice.* (SDK) + Android's built-in SpeechRecognizer, same as the
+    // rehearsal overlay (VoiceCommandActivity) already used. RoleManager itself needs API 29+
+    // (minSdk here is 26); every call site checks Build.VERSION.SDK_INT first and the feature
+    // simply isn't offered below that, same as it never worked via the old approach either.
 }
