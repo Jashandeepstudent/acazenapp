@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Config for AcazenInteractionService, in the exact shape AOSP's own VoiceInteraction
+     sample uses (tests/VoiceInteraction/res/xml/interaction_service.xml): points the
+     framework at the session and recognition services, declares that Acazen supports the
+     system assist gesture (this is what lets the hold-Power shortcut, and long-press-Home /
+     assist-swipe on devices that have it, launch AcazenInteractionSession), and that it can
+     be launched straight from the lock screen. -->
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.acazen.app.AcazenInteractionSessionService"
+    android:recognitionService="com.acazen.app.AcazenRecognitionService"
+    android:settingsActivity="com.acazen.app.AssistantSetupActivity"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true" />

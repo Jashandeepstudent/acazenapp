@@ -29,10 +29,12 @@
 # instead of just dropping the unused reference.
 -dontwarn javax.annotation.**
 
-# Vosk ("Hey Acazen" wake word) binds to its native library through JNA, which uses reflection
-# to map Java method signatures onto native calls — R8 renaming or stripping those classes/
-# members silently breaks that mapping at runtime instead of failing the build. Rules match
-# JNA's own recommendation (see github.com/alphacep/vosk-android-demo's proguard-rules.pro).
--keep class com.sun.jna.* { *; }
--keepclassmembers class * extends com.sun.jna.* { public *; }
--dontwarn java.awt.**
+# Keep the voice-interaction classes the framework instantiates by name from
+# AndroidManifest.xml / res/xml/acazen_voice_interaction_service.xml (AcazenInteractionService,
+# AcazenInteractionSessionService, AcazenInteractionSession, AcazenRecognitionService) — R8
+# can't see those reflective framework lookups, so without this their constructors/overrides
+# could be stripped or renamed even though the app never calls them directly itself.
+-keep class com.acazen.app.AcazenInteractionService { *; }
+-keep class com.acazen.app.AcazenInteractionSessionService { *; }
+-keep class com.acazen.app.AcazenInteractionSession { *; }
+-keep class com.acazen.app.AcazenRecognitionService { *; }
