@@ -440,7 +440,7 @@ class AssistantSetupActivity : ComponentActivity() {
         }
     }
 
-    // FIX: preserve rounded corners - old version used setBackgroundColor() which wiped them.
+    // FIX: preserve rounded corners - old version used setBackgroundColor() which wiped them..
     private fun setPill(pillView: TextView, text: String, bgHex: String, fgHex: String, animate: Boolean) {
         val changed = pillView.text != text
         pillView.text = text
