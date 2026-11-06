@@ -8,10 +8,7 @@
 
     <!-- Hold-Power voice shortcut: Acazen registers as the device's Digital Assistant app
          (RoleManager.ROLE_ASSISTANT, requested from AssistantSetupActivity) so the SYSTEM
-         itself routes its native hold-Power-for-assistant gesture to AcazenInteractionSession,
-         which dictates with the mic and needs to light the screen / draw over the keyguard when
-         summoned from sleep. No always-on microphone, no boot receiver, no on-device wake-word
-         model — nothing runs until the gesture fires, so this costs zero background battery. -->
+         itself routes its native hold-Power-for-assistant gesture to AcazenInteractionSession -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -37,11 +34,6 @@
             </intent-filter>
         </activity>
 
-
-        <!-- THE dedicated setup page for the hold-Power Assistant shortcut: animated 3-step
-             checklist (mic -> make Acazen the Assistant -> live test), honest state read fresh
-             from RoleManager every time, and OEM troubleshooting guidance. Opened from the
-             website sheet toggle. -->
         <activity
             android:name=".AssistantSetupActivity"
             android:exported="false"
@@ -49,22 +41,22 @@
             android:launchMode="singleTop"
             android:theme="@style/Theme.Acazen" />
 
-        <!-- Rehearsal-mode overlay only now ("Try it" on the setup page). The real gesture no
-             longer launches this Activity directly — see its class doc comment. -->
+        <!-- FIX: exported=true + ASSIST filter is required for ROLE_ASSISTANT eligibility.
+             Without this, RoleManager request silently returns RESULT_CANCELED. -->
         <activity
             android:name=".VoiceCommandActivity"
-            android:exported="false"
+            android:exported="true"
             android:excludeFromRecents="true"
             android:launchMode="singleTask"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
-            android:theme="@style/Theme.Acazen.VoiceOverlay" />
+            android:theme="@style/Theme.Acazen.VoiceOverlay">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
 
-        <!-- Makes Acazen eligible for, and (once the user grants it) the live holder of,
-             RoleManager.ROLE_ASSISTANT — the system setting that routes its native
-             hold-Power-button gesture (and long-press-Home / assist-swipe on devices that have
-             one) to AcazenInteractionSession. See AcazenInteractionService's doc comment for
-             the full explanation of why this replaced the old accessibility-service approach. -->
         <service
             android:name=".AcazenInteractionService"
             android:exported="true"
@@ -85,8 +77,6 @@
             android:permission="android.permission.BIND_VOICE_INTERACTION"
             android:process=":interactor" />
 
-        <!-- Required for ROLE_ASSISTANT eligibility; performs no recognition work itself — see
-             AcazenRecognitionService's doc comment. -->
         <service
             android:name=".AcazenRecognitionService"
             android:exported="true"
@@ -109,7 +99,6 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
-
 
     </application>
 </manifest>
