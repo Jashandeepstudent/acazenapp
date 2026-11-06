@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -24,27 +25,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 
 /**
- * THE setup page for Acazen's hold-Power voice shortcut — replaces the old
- * DoublePressSettingsActivity, which drove an AccessibilityService that could never actually
- * see the Power key (see AcazenInteractionService's doc comment for the full explanation).
- *
- * This page does the one thing that actually makes "hold Power → Acazen" work: ask the user to
- * make Acazen their device's registered Digital Assistant app
- * (RoleManager.ROLE_ASSISTANT). Once granted, the OS itself — not Acazen — owns the power-button
- * gesture and routes it straight to AcazenInteractionSession.
- *
- * Same two-honest-truths design as before:
- *   1. RoleManager.createRequestRoleIntent(ROLE_ASSISTANT) does not always show a confirmation
- *      dialog on every OEM build; the reliable fallback is deep-linking to
- *      Settings.ACTION_VOICE_INPUT_SETTINGS ("Default apps › Assist & voice input") and
- *      re-checking isRoleHeld() when the user comes back — exactly like the old page re-checked
- *      Settings.Secure for the accessibility toggle.
- *   2. State is always polled fresh from RoleManager on resume, never assumed from a click, so
- *      the page can never silently lie about whether the shortcut is actually live.
+ * Setup page for hold-Power voice shortcut.
+ * Step 2 requests RoleManager.ROLE_ASSISTANT so the OS routes
+ * hold-Power to AcazenInteractionSession.
  */
 class AssistantSetupActivity : ComponentActivity() {
 
     companion object {
+        private const val TAG = "AssistantSetup"
         fun launch(context: Context) {
             context.startActivity(
                 Intent(context, AssistantSetupActivity::class.java)
@@ -64,8 +52,16 @@ class AssistantSetupActivity : ComponentActivity() {
     private val micPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { refresh(animated = true) }
 
+    // FIX: auto-fallback when system returns without granting.
+    // Previously this just called refresh(), so silent-cancel looked like a dead click.
     private val roleRequestLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { refresh(animated = true) }
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            refresh(animated = true)
+            if (!assistantOn()) {
+                toast("Pick Acazen on the next screen")
+                openVoiceInputSettings()
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -85,12 +81,11 @@ class AssistantSetupActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // The user may have granted/changed the assistant role or permission while we were
-        // paused in system Settings — re-read everything the moment they come back.
+        // Re-read role + permission fresh - user may have changed them in Settings.
         refresh(animated = true)
     }
 
-    // ---- state -------------------------------------------------------------------------------
+    // ---- state ----
 
     private fun micGranted(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
@@ -106,30 +101,40 @@ class AssistantSetupActivity : ComponentActivity() {
     private fun assistantOn(): Boolean =
         roleManager()?.isRoleHeld(RoleManager.ROLE_ASSISTANT) ?: false
 
-    // ---- actions -----------------------------------------------------------------------------
+    // ---- actions ----
 
     private fun requestMic() = micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
 
     /**
-     * Requests ROLE_ASSISTANT. On builds where the role dialog doesn't appear, this call still
-     * opens something useful (often the default-apps picker directly); either way onResume()
-     * re-checks isRoleHeld() so the step always ends up honest about what actually happened.
+     * FIX: Step 2 handler. Proves click fired, checks OEM support,
+     * then falls back to manual Settings when dialog is missing/dropped.
      */
     private fun requestAssistantRole() {
+        Log.d(TAG, "step2 clicked")
+        toast("Opening Assistant settings...")
+
         val rm = roleManager()
-        if (rm == null || !roleAvailable()) {
+        if (rm == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || !roleAvailable()) {
+            Log.d(TAG, "role not available, opening manual settings")
             openVoiceInputSettings()
             return
         }
         try {
-            roleRequestLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT))
+            val intent = rm.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT)
+            // Some OEMs have no activity for the role intent - go manual immediately.
+            if (intent.resolveActivity(packageManager) == null) {
+                Log.d(TAG, "no handler for role intent, opening manual settings")
+                openVoiceInputSettings()
+                return
+            }
+            roleRequestLauncher.launch(intent)
         } catch (e: Exception) {
+            Log.d(TAG, "role request failed, opening manual settings: $e")
             openVoiceInputSettings()
         }
     }
 
-    /** Fallback / manual path: "Default apps › Assist & voice input" lets the user pick
-     *  Acazen directly even on OEM builds where the role-request dialog misbehaves. */
+    /** Manual path: Default apps > Assist & voice input */
     private fun openVoiceInputSettings() {
         try {
             startActivity(
@@ -148,9 +153,6 @@ class AssistantSetupActivity : ComponentActivity() {
         }
     }
 
-    /** Live gesture rehearsal: shows the exact same listening overlay the real gesture will
-     *  summon (VoiceCommandActivity in TEST mode), so the user can confirm mic + recognizer
-     *  work on this device before trusting the Power-hold gesture itself. */
     private fun runLiveTest() {
         testedOkOnce = true
         testPill.text = "Testing…"
@@ -161,6 +163,7 @@ class AssistantSetupActivity : ComponentActivity() {
         } catch (e: Exception) {
             toast("Couldn't open the test overlay")
         }
+        refresh(animated = false)
     }
 
     private fun openAppSettingsPage() {
@@ -174,7 +177,7 @@ class AssistantSetupActivity : ComponentActivity() {
         }
     }
 
-    // ---- UI ------------------------------------------------------------------------------------
+    // ---- UI ----
 
     private fun buildUi(): View {
         val bg = LinearLayout(this).apply {
@@ -315,6 +318,8 @@ class AssistantSetupActivity : ComponentActivity() {
             setPadding(dp(16), dp(14), dp(16), dp(14))
             background = rounded("#FFFFFF", 18)
             elevation = dp(2).toFloat()
+            isClickable = true
+            isFocusable = true
             setOnClickListener { onClick() }
         }
         val badge = TextView(this).apply {
@@ -402,7 +407,7 @@ class AssistantSetupActivity : ComponentActivity() {
         android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
     }
 
-    // ---- live state sync ------------------------------------------------------------------------
+    // ---- live state sync ----
 
     private fun refresh(animated: Boolean) {
         val mic = micGranted()
@@ -413,7 +418,8 @@ class AssistantSetupActivity : ComponentActivity() {
         setPill(assistantPill, if (assistant) "On ✓" else "Off",
             if (assistant) "#E6F4EA" else "#EEF2F7", if (assistant) "#137333" else "#5A7A9A", animated && assistant)
         setPill(testPill, if (testedOkOnce) "Tried ✓" else "Ready",
-            "#E6F4EA", "#137333", animate = false)
+            if (testedOkOnce) "#E6F4EA" else "#EEF2F7",
+            if (testedOkOnce) "#137333" else "#5A7A9A", animate = false)
 
         DoublePressPrefs.setEnabled(this, mic && assistant)
 
@@ -434,10 +440,11 @@ class AssistantSetupActivity : ComponentActivity() {
         }
     }
 
+    // FIX: preserve rounded corners - old version used setBackgroundColor() which wiped them.
     private fun setPill(pillView: TextView, text: String, bgHex: String, fgHex: String, animate: Boolean) {
         val changed = pillView.text != text
         pillView.text = text
-        pillView.setBackgroundColor(Color.parseColor(bgHex))
+        pillView.background = rounded(bgHex, 12)
         pillView.setTextColor(Color.parseColor(fgHex))
         if (animate && changed) {
             pillView.scaleX = 0.6f
