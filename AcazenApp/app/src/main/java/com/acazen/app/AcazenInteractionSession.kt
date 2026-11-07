@@ -2,7 +2,6 @@ package com.acazen.app
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -11,13 +10,8 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.service.voice.VoiceInteractionSession
-import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
 
 /**
  * The real "hold Power → Acazen is listening" overlay, drawn as the content view of a
@@ -31,10 +25,10 @@ import android.widget.TextView
  * onCreate() → onCreateContentView() [UI only, no args yet] → onShow(args, showFlags) [args are
  * available here, right before the window is actually shown] → window appears.
  *
- * The UI and speech-recognition flow are carried over from the old VoiceCommandActivity
- * (same look, same auto-send-on-silence behavior); only the hosting mechanism changed, from an
- * Activity to a VoiceInteractionSession, because that is what the platform actually invokes for
- * this gesture.
+ * The UI (ListeningOverlay: floating particles + logo shimmer, calm while listening and brisk
+ * while thinking) and the speech-recognition flow are shared with VoiceCommandActivity — same
+ * look, same auto-send-on-silence behavior; only the hosting mechanism differs, because a
+ * VoiceInteractionSession is what the platform actually invokes for this gesture.
  */
 class AcazenInteractionSession(context: Context) : VoiceInteractionSession(context) {
 
@@ -50,9 +44,7 @@ class AcazenInteractionSession(context: Context) : VoiceInteractionSession(conte
     private var retriedOnce = false
     private var lastHeard: String? = null
 
-    private lateinit var statusText: TextView
-    private lateinit var transcriptText: TextView
-    private lateinit var pulseDot: TextView
+    private lateinit var overlay: ListeningOverlay
 
     /**
      * Args aren't available yet in onCreate()/onCreateContentView() (see lifecycle note above),
@@ -77,83 +69,10 @@ class AcazenInteractionSession(context: Context) : VoiceInteractionSession(conte
     }
 
     override fun onCreateContentView(): View {
-        val root = FrameLayout(context)
-        root.setBackgroundColor(Color.parseColor("#B3000000")) // 70% scrim, assistant-overlay feel
-
-        val card = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(28), dp(26), dp(28), dp(22))
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.parseColor("#F7FFFFFF"))
-                cornerRadius = dp(28).toFloat()
-            }
-        }
-
-        pulseDot = TextView(context).apply {
-            text = "●"
-            textSize = 30f
-            setTextColor(Color.parseColor("#1A73E8"))
-            gravity = Gravity.CENTER
-        }
-
-        statusText = TextView(context).apply {
-            text = "Listening… speak now"
-            textSize = 17f
-            setTextColor(Color.parseColor("#111111"))
-            gravity = Gravity.CENTER
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(0, dp(8), 0, dp(10))
-        }
-
-        transcriptText = TextView(context).apply {
-            text = ""
-            textSize = 20f
-            setTextColor(Color.parseColor("#222222"))
-            gravity = Gravity.CENTER
-            setPadding(0, dp(4), 0, dp(6))
-        }
-
-        val hint = TextView(context).apply {
-            text = "It will be sent to Acazen automatically"
-            textSize = 12f
-            setTextColor(Color.parseColor("#777777"))
-            gravity = Gravity.CENTER
-        }
-
-        val scroll = ScrollView(context).apply {
-            addView(transcriptText)
-            isVerticalScrollBarEnabled = false
-        }
-
-        card.addView(pulseDot)
-        card.addView(statusText)
-        card.addView(scroll, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, dp(96)
-        ))
-        card.addView(hint)
-
-        root.addView(card, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.CENTER
-        ).apply { setMargins(dp(28), dp(28), dp(28), dp(28)) })
-
-        startPulse()
+        overlay = ListeningOverlay(context)
         // Listening itself starts from onShow(), once args/window are available — see that
         // override's doc comment for why onCreateContentView() is too early for it.
-        return root
-    }
-
-    private fun dp(v: Int): Int = (v * context.resources.displayMetrics.density).toInt()
-
-    private fun startPulse() {
-        pulseDot.animate().alpha(0.25f).setDuration(500).withEndAction {
-            if (!sent) {
-                pulseDot.animate().alpha(1f).setDuration(500)
-                    .withEndAction { if (!sent) startPulse() }.start()
-            }
-        }.start()
+        return overlay.root
     }
 
     private fun beginListening() {
@@ -170,18 +89,21 @@ class AcazenInteractionSession(context: Context) : VoiceInteractionSession(conte
         sr.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
             override fun onBeginningOfSpeech() {
-                statusText.text = "Listening…"
+                overlay.showListening()
             }
 
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
+            override fun onEndOfSpeech() {
+                overlay.showThinking()
+            }
 
             override fun onError(error: Int) {
                 // ERROR_SPEAKER_TIMEOUT (7) is @hide in the public SDK; referenced as a literal.
                 val noMatchOrTimeout = error == SpeechRecognizer.ERROR_NO_MATCH || error == 7
                 if (noMatchOrTimeout && !retriedOnce) {
                     retriedOnce = true
+                    overlay.showListening()
                     try { sr.startListening(listeningIntent()) } catch (e: Exception) { handOff(null) }
                     return
                 }
@@ -218,8 +140,7 @@ class AcazenInteractionSession(context: Context) : VoiceInteractionSession(conte
     private fun showLive(bundle: Bundle?) {
         val t = firstText(bundle) ?: return
         lastHeard = t
-        transcriptText.text = t
-        statusText.text = "I heard you…"
+        overlay.showHeard(t)
     }
 
     private fun deliver(bundle: Bundle?) {
@@ -236,7 +157,7 @@ class AcazenInteractionSession(context: Context) : VoiceInteractionSession(conte
         bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
 
     private fun failGracefully(reason: String) {
-        statusText.text = reason
+        overlay.showMessage(reason)
         mainHandler.postDelayed({ handOff(text = null) }, 1200)
     }
 
@@ -244,8 +165,7 @@ class AcazenInteractionSession(context: Context) : VoiceInteractionSession(conte
     private fun handOff(text: String?) {
         if (sent) return
         sent = true
-        pulseDot.animate().cancel()
-        statusText.text = if (text != null) "Sending to Acazen…" else "Opening Acazen…"
+        overlay.showThinking(if (text != null) "Sending to Acazen…" else "Opening Acazen…")
 
         mainHandler.postDelayed({
             try {

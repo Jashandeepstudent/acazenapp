@@ -10,7 +10,7 @@
 
 
     <!-- Theme for VoiceCommandActivity, the hold-Power "Listening…" overlay.
-         Translucent like the Wake hop (the activity paints its own scrim + card), but with a
+         Translucent like the Wake hop (the activity paints its own particle-and-logo screen), but with a
          fade so it feels like an assistant surface appearing rather than an app launching. -->
     <style name="Theme.Acazen.VoiceOverlay" parent="Theme.Acazen">
         <!-- Transient overlay: transparent background, no launch animations. -->

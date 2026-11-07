@@ -4,25 +4,20 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import android.view.Gravity
 import android.view.WindowManager
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.core.content.ContextCompat
 
 /**
  * Rehearsal-mode overlay ("Try it" on the setup page) for the hold-Power voice shortcut — same
- * look and speech-recognition flow Acazen uses for the real thing, so the user can confirm mic +
+ * look (ListeningOverlay: floating particles + logo shimmer) and speech-recognition flow Acazen
+ * uses for the real thing, so the user can confirm mic +
  * recognizer work on their phone before ever relying on the gesture itself.
  *
  * The REAL gesture no longer launches this Activity: since Acazen became the device's
@@ -70,9 +65,7 @@ class VoiceCommandActivity : ComponentActivity() {
     private var sent = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private lateinit var statusText: TextView
-    private lateinit var transcriptText: TextView
-    private lateinit var pulseDot: TextView
+    private lateinit var overlay: ListeningOverlay
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -83,7 +76,8 @@ class VoiceCommandActivity : ComponentActivity() {
         setTurnScreenOn(true)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        setContentView(buildUi())
+        overlay = ListeningOverlay(this)
+        setContentView(overlay.root)
 
         val isTest = intent?.action == ACTION_TEST
 
@@ -116,84 +110,6 @@ class VoiceCommandActivity : ComponentActivity() {
         }
     }
 
-    private fun buildUi(): FrameLayout {
-        val root = FrameLayout(this)
-        root.setBackgroundColor(Color.parseColor("#B3000000")) // 70% scrim, assistant-overlay feel
-
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(28), dp(26), dp(28), dp(22))
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(Color.parseColor("#F7FFFFFF"))
-                cornerRadius = dp(28).toFloat()
-            }
-        }
-
-        pulseDot = TextView(this).apply {
-            text = "●"
-            textSize = 30f
-            setTextColor(Color.parseColor("#1A73E8"))
-            gravity = Gravity.CENTER
-        }
-
-        statusText = TextView(this).apply {
-            text = "Listening… speak now"
-            textSize = 17f
-            setTextColor(Color.parseColor("#111111"))
-            gravity = Gravity.CENTER
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(0, dp(8), 0, dp(10))
-        }
-
-        transcriptText = TextView(this).apply {
-            text = ""
-            textSize = 20f
-            setTextColor(Color.parseColor("#222222"))
-            gravity = Gravity.CENTER
-            setPadding(0, dp(4), 0, dp(6))
-        }
-
-        val hint = TextView(this).apply {
-            text = "It will be sent to Acazen automatically"
-            textSize = 12f
-            setTextColor(Color.parseColor("#777777"))
-            gravity = Gravity.CENTER
-        }
-
-        val scroll = ScrollView(this).apply {
-            addView(transcriptText)
-            isVerticalScrollBarEnabled = false
-        }
-
-        card.addView(pulseDot)
-        card.addView(statusText)
-        card.addView(scroll, LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, dp(96)
-        ))
-        card.addView(hint)
-
-        root.addView(card, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.CENTER
-        ).apply { setMargins(dp(28), dp(28), dp(28), dp(28)) })
-
-        startPulse()
-        return root
-    }
-
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-
-    private fun startPulse() {
-        pulseDot.animate().alpha(0.25f).setDuration(500).withEndAction {
-            if (!sent && !isFinishing) {
-                pulseDot.animate().alpha(1f).setDuration(500)
-                    .withEndAction { if (!sent && !isFinishing) startPulse() }.start()
-            }
-        }.start()
-    }
-
     private fun beginListening() {
         if (started || sent) return
         started = true
@@ -203,12 +119,14 @@ class VoiceCommandActivity : ComponentActivity() {
         sr.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
             override fun onBeginningOfSpeech() {
-                statusText.text = "Listening…"
+                overlay.showListening()
             }
 
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
+            override fun onEndOfSpeech() {
+                overlay.showThinking()
+            }
 
             override fun onError(error: Int) {
                 // Anything other than "you said nothing" → open the app anyway rather than
@@ -219,6 +137,7 @@ class VoiceCommandActivity : ComponentActivity() {
                 val noMatchOrTimeout = error == SpeechRecognizer.ERROR_NO_MATCH || error == 7
                 if (noMatchOrTimeout && !retriedOnce) {
                     retriedOnce = true
+                    overlay.showListening()
                     try { sr.startListening(listeningIntent()) } catch (e: Exception) { handOff(null) }
                     return
                 }
@@ -259,8 +178,7 @@ class VoiceCommandActivity : ComponentActivity() {
     private fun showLive(bundle: Bundle?) {
         val t = firstText(bundle) ?: return
         lastHeard = t
-        transcriptText.text = t
-        statusText.text = "I heard you…"
+        overlay.showHeard(t)
     }
 
     private fun deliver(bundle: Bundle?) {
@@ -277,14 +195,12 @@ class VoiceCommandActivity : ComponentActivity() {
         bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
 
     private fun failGracefully(reason: String) {
-        statusText.text = reason
+        overlay.showMessage(reason)
         mainHandler.postDelayed({ handOff(text = null) }, 1200)
     }
 
     private fun showTestResult(msg: String) {
-        pulseDot.animate().cancel()
-        statusText.text = msg
-        transcriptText.text = ""
+        overlay.showMessage(msg)
         mainHandler.postDelayed({ if (!isFinishing) finish() }, 2600)
     }
 
@@ -292,16 +208,18 @@ class VoiceCommandActivity : ComponentActivity() {
     private fun handOff(text: String?) {
         if (sent) return
         sent = true
-        pulseDot.animate().cancel()
 
         if (intent?.action == ACTION_TEST) {
             // Rehearsal mode: show what we heard right here so the user gets instant feedback.
-            statusText.text = if (text != null) "✓ Heard: \"$text\" — the gesture works!" else "✗ Didn't catch that — try again from the setup page."
+            overlay.showMessage(
+                if (text != null) "✓ Heard: \"$text\" — the gesture works!"
+                else "✗ Didn't catch that — try again from the setup page."
+            )
             mainHandler.postDelayed({ if (!isFinishing) finish() }, 2800)
             return
         }
 
-        statusText.text = if (text != null) "Sending to Acazen…" else "Opening Acazen…"
+        overlay.showThinking(if (text != null) "Sending to Acazen…" else "Opening Acazen…")
 
         mainHandler.postDelayed({
             try {
