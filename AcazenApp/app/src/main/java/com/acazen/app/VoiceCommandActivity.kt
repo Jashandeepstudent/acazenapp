@@ -89,7 +89,7 @@ class VoiceCommandActivity : ComponentActivity() {
 
         val micGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
-        val recognizerAvailable = SpeechRecognizer.isRecognitionAvailable(this)
+        val recognizerAvailable = Recognizers.findService(this) != null
 
         when {
             !recognizerAvailable -> {
@@ -114,7 +114,12 @@ class VoiceCommandActivity : ComponentActivity() {
         if (started || sent) return
         started = true
 
-        val sr = SpeechRecognizer.createSpeechRecognizer(this)
+        // A real recognizer, never Acazen's own stub service — see Recognizers.
+        val sr = Recognizers.create(this)
+        if (sr == null) {
+            failGracefully("Voice recognition isn't available on this device")
+            return
+        }
         recognizer = sr
         sr.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}

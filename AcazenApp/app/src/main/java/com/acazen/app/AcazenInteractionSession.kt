@@ -79,12 +79,12 @@ class AcazenInteractionSession(context: Context) : VoiceInteractionSession(conte
         if (started || sent) return
         started = true
 
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+        // A real recognizer, never Acazen's own stub service — see Recognizers.
+        val sr = Recognizers.create(context)
+        if (sr == null) {
             failGracefully("Voice recognition isn't available on this device")
             return
         }
-
-        val sr = SpeechRecognizer.createSpeechRecognizer(context)
         recognizer = sr
         sr.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}

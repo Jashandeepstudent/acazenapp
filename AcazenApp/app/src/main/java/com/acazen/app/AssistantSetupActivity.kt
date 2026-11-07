@@ -59,6 +59,7 @@ class AssistantSetupActivity : ComponentActivity() {
 
     private lateinit var micPill: TextView
     private lateinit var assistantPill: TextView
+    private lateinit var gesturePill: TextView
     private lateinit var testPill: TextView
     private lateinit var primaryButton: Button
     private lateinit var stepList: LinearLayout
@@ -203,6 +204,50 @@ class AssistantSetupActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Most phones don't turn "hold Power for the assistant" on by themselves, and Android doesn't
+     * let an app flip it (or even read it) — so this walks the user to the right Settings screen
+     * for their brand and asks them to confirm once it's on.
+     */
+    private fun openGestureGuide() {
+        val brand = Build.MANUFACTURER.orEmpty().lowercase()
+        val path = when {
+            "samsung" in brand ->
+                "Settings › Advanced features › Side button › Press and hold → choose “Wake Bixby”. " +
+                    "It opens whichever assistant is set as your default, which is Acazen once step 2 is On."
+            "xiaomi" in brand || "redmi" in brand || "poco" in brand ->
+                "Settings › Additional settings › Button shortcuts → Long press Power → choose the assistant."
+            "oneplus" in brand || "oppo" in brand || "realme" in brand ->
+                "Settings › Buttons & gestures (or Additional settings › Power button) → Press and hold power button → Assistant."
+            "google" in brand ->
+                "Settings › System › Gestures › Press & hold power button → choose “Digital assistant”."
+            else ->
+                "Settings › System › Gestures › Press & hold power button → “Digital assistant”. " +
+                    "On other brands look under “Side key”, “Power button” or “Button shortcuts”."
+        }
+        val message = "Many phones ship with this switched off, so holding Power just opens the power menu.\n\n" +
+            "On your phone:\n$path\n\n" +
+            "Can't find it? Search Settings for “power button” or “side key”."
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Turn on hold-Power for Assistant")
+            .setMessage(message)
+            .setPositiveButton("I turned it on") { _, _ ->
+                DoublePressPrefs.setGestureConfirmed(this, true)
+                refresh(animated = true)
+            }
+            .setNeutralButton("Open Settings") { _, _ -> openSystemSettings() }
+            .setNegativeButton("Later", null)
+            .show()
+    }
+
+    private fun openSystemSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) {
+            toast("Open your phone's Settings app and search for “power button”")
+        }
+    }
+
     private fun openAppSettingsPage() {
         try {
             startActivity(
@@ -262,10 +307,11 @@ class AssistantSetupActivity : ComponentActivity() {
         }
         col.addView(note, lp(w = -1, h = -2, top = 16))
 
-        col.addView(titleText("Set up in 3 steps", 15f, "#112133", bold = true, top = 26))
+        col.addView(titleText("Set up in 4 steps", 15f, "#112133", bold = true, top = 26))
 
         micPill = pill("Not done", "#FDECEC", "#C5221F")
         assistantPill = pill("Off", "#EEF2F7", "#5A7A9A")
+        gesturePill = pill("To do", "#EEF2F7", "#5A7A9A")
         testPill = pill("Ready", "#EEF2F7", "#5A7A9A")
 
         stepList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -282,7 +328,14 @@ class AssistantSetupActivity : ComponentActivity() {
         )
         stepList.addView(
             stepRow(
-                "3", "Try the overlay",
+                "3", "Turn on hold-Power for Assistant",
+                "Most phones have this off by default. Switch your Power button's hold action to the assistant — we show you where.",
+                gesturePill
+            ) { openGestureGuide() }
+        )
+        stepList.addView(
+            stepRow(
+                "4", "Try the overlay",
                 "Rehearses the exact listening screen so you can confirm mic + recognizer work here, before relying on the real gesture.",
                 testPill
             ) { runLiveTest() }
@@ -319,15 +372,15 @@ class AssistantSetupActivity : ComponentActivity() {
         col.addView(titleText("How it works", 15f, "#112133", bold = true, top = 30))
         col.addView(bodyText(
             "① HOLD the Power button, same as you would for a phone's built-in assistant.\n" +
-                "② Acazen appears full-screen with a pulsing mic and writes what it hears.\n" +
+                "② Acazen appears full-screen with floating light particles around its logo and writes what it hears.\n" +
                 "③ When you stop talking, the question is sent to Acazen by itself.",
             top = 8
         ))
 
         col.addView(titleText("If holding Power still opens the power menu", 15f, "#112133", bold = true, top = 26))
         col.addView(bodyText(
-            "Make sure step 2 above shows “On”. Some phones also have their own " +
-                "assistant-gesture switch that needs to point at Acazen:\n\n" +
+            "Make sure steps 2 and 3 above are done — step 3 is the phone's own " +
+                "hold-Power switch, which needs to point at the assistant:\n\n" +
                 "• Pixel / stock: Settings › System › Gestures › Power button › hold for Assistant\n" +
                 "• Samsung: Settings › Advanced features › Side key\n" +
                 "• Xiaomi/Redmi: Settings › Apps › Default apps › Assist & voice input\n" +
@@ -360,6 +413,7 @@ class AssistantSetupActivity : ComponentActivity() {
         when {
             !micGranted() -> requestMic()
             !assistantOn() -> requestAssistantRole()
+            !DoublePressPrefs.isGestureConfirmed(this) -> openGestureGuide()
             !testedOkOnce -> runLiveTest()
             else -> toast("You're all set — try holding Power now 🎉")
         }
@@ -468,6 +522,9 @@ class AssistantSetupActivity : ComponentActivity() {
             if (mic) "#E6F4EA" else "#FDECEC", if (mic) "#137333" else "#C5221F", animated && mic)
         setPill(assistantPill, if (assistant) "On ✓" else "Off",
             if (assistant) "#E6F4EA" else "#EEF2F7", if (assistant) "#137333" else "#5A7A9A", animated && assistant)
+        val gesture = DoublePressPrefs.isGestureConfirmed(this)
+        setPill(gesturePill, if (gesture) "Done ✓" else "To do",
+            if (gesture) "#E6F4EA" else "#EEF2F7", if (gesture) "#137333" else "#5A7A9A", animated && gesture)
         setPill(testPill, if (testedOkOnce) "Tried ✓" else "Ready",
             "#E6F4EA", "#137333", animate = false)
 
@@ -476,6 +533,7 @@ class AssistantSetupActivity : ComponentActivity() {
         primaryButton.text = when {
             !mic -> "Allow microphone"
             !assistant -> "Make Acazen my Assistant"
+            !gesture -> "Turn on hold-Power for Assistant"
             !testedOkOnce -> "Try it: open the listening overlay"
             else -> "All set — hold Power to try it"
         }

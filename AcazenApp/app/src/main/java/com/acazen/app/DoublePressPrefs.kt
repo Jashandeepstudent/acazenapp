@@ -11,10 +11,26 @@ package com.acazen.app
 object DoublePressPrefs {
     private const val PREFS = "acazen_double_press"
     private const val KEY_ENABLED = "enabled"
+    private const val KEY_GESTURE_CONFIRMED = "gesture_confirmed"
 
     fun isEnabled(context: android.content.Context): Boolean =
         context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
             .getBoolean(KEY_ENABLED, false)
+
+    /**
+     * Android gives apps no way to read the phone's "hold Power for assistant" switch, so the
+     * setup page asks the user to confirm they turned it on and remembers the answer here.
+     */
+    fun isGestureConfirmed(context: android.content.Context): Boolean =
+        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+            .getBoolean(KEY_GESTURE_CONFIRMED, false)
+
+    fun setGestureConfirmed(context: android.content.Context, confirmed: Boolean) {
+        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_GESTURE_CONFIRMED, confirmed)
+            .apply()
+    }
 
     fun setEnabled(context: android.content.Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)

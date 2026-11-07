@@ -89,7 +89,9 @@ class MainActivity : AppCompatActivity() {
     private var pageReady = false
     private var splashGone = false
     private var loaderAnim: ObjectAnimator? = null
-    private var pendingCamera: PermissionRequest? = null
+    private var pendingWebPermission: PermissionRequest? = null
+    private lateinit var speechBridge: NativeSpeechBridge
+    private val micCallbacks = mutableListOf<(Boolean) -> Unit>()
 
     // File uploads from the website (photo / PDF / document pickers).
     private var fileCallback: ValueCallback<Array<Uri>>? = null
@@ -112,13 +114,72 @@ class MainActivity : AppCompatActivity() {
             if (granted) launchCapture() else openPicker()
         }
 
-    // Camera access for the website (e.g. Smart focus). Android asks the user once.
-    private val cameraLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            val request = pendingCamera
-            pendingCamera = null
-            if (granted) request?.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) else request?.deny()
+    // Camera / microphone access for the website (Smart focus, voice mode, recordings).
+    // These use the app's own Android permissions — Android asks the user once, and the
+    // site never shows a browser-style permission prompt inside the app.
+    private val webPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            val request = pendingWebPermission
+            pendingWebPermission = null
+            if (request != null) {
+                val allowed = mutableListOf<String>()
+                if (result[Manifest.permission.CAMERA] == true || hasPermission(Manifest.permission.CAMERA))
+                    if (PermissionRequest.RESOURCE_VIDEO_CAPTURE in request.resources)
+                        allowed.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                if (result[Manifest.permission.RECORD_AUDIO] == true || hasPermission(Manifest.permission.RECORD_AUDIO))
+                    if (PermissionRequest.RESOURCE_AUDIO_CAPTURE in request.resources)
+                        allowed.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                if (allowed.isEmpty()) request.deny() else request.grant(allowed.toTypedArray())
+            }
+            if (result[Manifest.permission.RECORD_AUDIO] == false) onMicDenied()
         }
+
+    // Microphone for the native speech bridge (see withMicPermission).
+    private val micLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val waiting = micCallbacks.toList()
+            micCallbacks.clear()
+            waiting.forEach { it(granted) }
+            if (!granted) onMicDenied()
+        }
+
+    private fun hasPermission(permission: String) =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Runs [onResult] once the app's microphone permission is known: immediately if already
+     * granted, otherwise after Android's one-time permission dialog.
+     */
+    fun withMicPermission(onResult: (Boolean) -> Unit) {
+        if (hasPermission(Manifest.permission.RECORD_AUDIO)) {
+            onResult(true)
+            return
+        }
+        val firstWaiter = micCallbacks.isEmpty()
+        micCallbacks.add(onResult)
+        if (firstWaiter) micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
+    // The microphone was refused. If Android won't ask again, the only fix is the app's settings
+    // page, so offer to open it (instead of leaving the user stuck on a dead mic button).
+    private fun onMicDenied() {
+        if (isFinishing || isDestroyed) return
+        if (shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO)) return
+        AlertDialog.Builder(this)
+            .setTitle("Microphone is off for Acazen")
+            .setMessage("Turn on Microphone in Acazen's app settings to talk to Acazen.")
+            .setPositiveButton("Open settings") { _, _ ->
+                try {
+                    startActivity(
+                        Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                            .setData(Uri.fromParts("package", packageName, null))
+                    )
+                } catch (e: Exception) {
+                }
+            }
+            .setNegativeButton("Not now", null)
+            .show()
+    }
 
     private val connectivity by lazy { getSystemService(ConnectivityManager::class.java) }
 
@@ -264,6 +325,12 @@ class MainActivity : AppCompatActivity() {
         // only ever actually renders acazen.com's own pages.
         webView.addJavascriptInterface(AssistantBridge(), "AcazenAssistant")
 
+        // Voice mode on the website: the WebView has no Web Speech API of its own, so the site's
+        // speech recognition is handed to the phone's recognizer (see NativeSpeechBridge). It
+        // refuses to run for anything but acazen.com pages.
+        speechBridge = NativeSpeechBridge(this, webView)
+        webView.addJavascriptInterface(speechBridge, "AcazenSTT")
+
         webView.webViewClient = object : WebViewClient() {
             // Web pages stay inside the app; tel:, mailto:, etc. go to the matching app.
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -276,7 +343,13 @@ class MainActivity : AppCompatActivity() {
                 return true
             }
 
+            override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                injectSpeechShim(view, url)
+            }
+
             override fun onPageFinished(view: WebView, url: String?) {
+                injectSpeechShim(view, url)
                 // A real page loaded successfully: the failed-load history entry (if any)
                 // is behind us, so the back button is safe to use again.
                 if (url != null && url != "about:blank") failedUrl = null
@@ -311,24 +384,29 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPermissionRequest(request: PermissionRequest) {
-                val host = request.origin.host.orEmpty()
-                val fromSite = request.origin.scheme == "https" &&
-                    (host == "acazen.com" || host.endsWith(".acazen.com"))
-                if (!fromSite || PermissionRequest.RESOURCE_VIDEO_CAPTURE !in request.resources) {
+                val wantsCamera = PermissionRequest.RESOURCE_VIDEO_CAPTURE in request.resources
+                val wantsMic = PermissionRequest.RESOURCE_AUDIO_CAPTURE in request.resources
+                if (!isAcazenUrl(request.origin.toString()) || (!wantsCamera && !wantsMic)) {
                     request.deny()
                     return
                 }
-                val cam = Manifest.permission.CAMERA
-                if (ContextCompat.checkSelfPermission(this@MainActivity, cam) == PackageManager.PERMISSION_GRANTED) {
-                    request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+                val missing = mutableListOf<String>()
+                if (wantsCamera && !hasPermission(Manifest.permission.CAMERA)) missing.add(Manifest.permission.CAMERA)
+                if (wantsMic && !hasPermission(Manifest.permission.RECORD_AUDIO)) missing.add(Manifest.permission.RECORD_AUDIO)
+                if (missing.isEmpty()) {
+                    val granted = mutableListOf<String>()
+                    if (wantsCamera) granted.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                    if (wantsMic) granted.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                    request.grant(granted.toTypedArray())
                 } else {
-                    pendingCamera?.deny()
-                    pendingCamera = request
-                    cameraLauncher.launch(cam)
+                    pendingWebPermission?.deny()
+                    pendingWebPermission = request
+                    webPermissionLauncher.launch(missing.toTypedArray())
                 }
             }
 
             override fun onProgressChanged(view: WebView, newProgress: Int) {
+                if (newProgress in 10..99) injectSpeechShim(view, view.url)
                 progress.progress = newProgress
                 progress.visibility = if (newProgress in 1..99) View.VISIBLE else View.GONE
                 if (newProgress == 100) {
@@ -411,6 +489,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Defines the website's speech recognition on top of the phone's recognizer (acazen.com only).
+    private fun injectSpeechShim(view: WebView, url: String?) {
+        if (!isAcazenUrl(url)) return
+        view.evaluateJavascript(NativeSpeechBridge.POLYFILL_JS, null)
+    }
+
     // ---- connectivity -------------------------------------------------------------------------
 
     private fun caps() = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
@@ -427,6 +511,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        speechBridge.release() // never keep the microphone open while the app is in the background
         try {
             connectivity.unregisterNetworkCallback(netCallback)
         } catch (e: Exception) {
@@ -682,6 +767,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (::speechBridge.isInitialized) speechBridge.release()
         finishChooser(null)
         pulses.forEach { it.cancel() }
         offline.removeCallbacks(null)
