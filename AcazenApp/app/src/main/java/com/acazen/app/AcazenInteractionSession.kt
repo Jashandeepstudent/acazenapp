@@ -2,6 +2,8 @@ package com.acazen.app
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -11,7 +13,10 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.service.voice.VoiceInteractionSession
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 
 /**
  * The real "hold Power → Acazen is listening" overlay, drawn as the content view of a
@@ -65,7 +70,34 @@ class AcazenInteractionSession(context: Context) : VoiceInteractionSession(conte
                     WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
             )
         } catch (e: Exception) { /* non-fatal: worst case the screen doesn't light on its own */ }
+        styleWindow()
         beginListening()
+    }
+
+    /**
+     * This window is created by the system with the phone's own theme, which is dark on a
+     * dark-mode phone and draws dark system bars. Paint it soft blue edge to edge instead —
+     * background, no dimming, transparent bars with dark icons — so no black shows around or
+     * behind the listening screen.
+     */
+    private fun styleWindow() {
+        val w = window?.window ?: return
+        try {
+            w.setBackgroundDrawable(ColorDrawable(ContextCompat.getColor(context, R.color.voice_bg_bottom)))
+            w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            w.statusBarColor = Color.TRANSPARENT
+            w.navigationBarColor = Color.TRANSPARENT
+            WindowCompat.setDecorFitsSystemWindows(w, false)
+            WindowCompat.getInsetsController(w, w.decorView).apply {
+                isAppearanceLightStatusBars = true
+                isAppearanceLightNavigationBars = true
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                w.isNavigationBarContrastEnforced = false
+                w.isStatusBarContrastEnforced = false
+            }
+        } catch (e: Exception) { /* non-fatal: the overlay's own blue background still shows */ }
     }
 
     override fun onCreateContentView(): View {

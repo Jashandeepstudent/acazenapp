@@ -8,6 +8,11 @@
     <color name="app_background">#DDEAF6</color>
     <color name="icon_bg">#F5F5F5</color>
 
+    <!-- Hold-Power listening screen: soft blue, brightest near the top, ending on the app's own
+         splash blue so the whole voice flow looks like part of Acazen. -->
+    <color name="voice_bg_top">#EAF2FD</color>
+    <color name="voice_bg_bottom">@color/splash_bg</color>
+
     <!-- Border of the logo frame on the opening screen: brand blue fading into the gold of the logo's wings. -->
     <color name="logo_frame_sky">#8DBBF6</color>
     <color name="logo_frame_gold">#D8B97F</color>

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -12,6 +13,8 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.core.content.ContextCompat
 
 /**
@@ -68,6 +71,9 @@ class VoiceCommandActivity : ComponentActivity() {
     private lateinit var overlay: ListeningOverlay
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Soft-blue screen right up to the edges: transparent system bars with dark icons.
+        val lightBars = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+        enableEdgeToEdge(statusBarStyle = lightBars, navigationBarStyle = lightBars)
         super.onCreate(savedInstanceState)
 
         // Light the screen and draw over the keyguard immediately — this is the whole point

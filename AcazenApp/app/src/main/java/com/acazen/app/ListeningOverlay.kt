@@ -14,7 +14,9 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.os.SystemClock
 import android.provider.Settings
 import android.text.TextUtils
@@ -24,6 +26,7 @@ import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.content.ContextCompat
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -62,13 +65,18 @@ class ListeningOverlay(context: Context) {
         val dm = context.resources.displayMetrics
         fun dp(v: Int) = (v * dm.density).roundToInt()
 
-        // Soft blue wash, brightest near the top — same stops as the approved preview.
-        root.background = GradientDrawable().apply {
+        // Soft blue, brightest near the top. A solid base sits under the radial glow so the
+        // screen is blue even if a device draws the gradient layer wrongly (never black).
+        val top = ContextCompat.getColor(context, R.color.voice_bg_top)
+        val bottom = ContextCompat.getColor(context, R.color.voice_bg_bottom)
+        val glow = GradientDrawable().apply {
             gradientType = GradientDrawable.RADIAL_GRADIENT
-            colors = intArrayOf(0xFFEEF3FF.toInt(), 0xFFF8FAFF.toInt())
+            colors = intArrayOf(top, bottom)
             gradientRadius = dm.heightPixels.toFloat()
             setGradientCenter(0.5f, 0.16f)
         }
+        root.background = LayerDrawable(arrayOf(ColorDrawable(bottom), glow))
+        root.fitsSystemWindows = false
 
         caption.apply {
             textSize = 16f

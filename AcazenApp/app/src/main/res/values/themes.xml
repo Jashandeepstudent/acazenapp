@@ -13,8 +13,15 @@
          Translucent like the Wake hop (the activity paints its own particle-and-logo screen), but with a
          fade so it feels like an assistant surface appearing rather than an app launching. -->
     <style name="Theme.Acazen.VoiceOverlay" parent="Theme.Acazen">
-        <!-- Transient overlay: transparent background, no launch animations. -->
-        <item name="android:windowBackground">@android:color/transparent</item>
+        <!-- Soft-blue window (never see-through, so nothing dark can show behind or around the
+             screen), with transparent system bars and dark icons over it. -->
+        <item name="android:windowBackground">@color/voice_bg_bottom</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="23">true</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">true</item>
+        <item name="android:enforceNavigationBarContrast" tools:targetApi="29">false</item>
+        <item name="android:enforceStatusBarContrast" tools:targetApi="29">false</item>
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
