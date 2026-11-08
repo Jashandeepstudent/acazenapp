@@ -21,6 +21,12 @@
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
+        <!-- Step 3 of setup (AssistantSetupActivity.openBrandSettings) resolves specific
+             com.android.settings activities to deep-link straight into the phone's own
+             "hold Power for Assistant" screen. com.android.settings is a system package and is
+             normally visible regardless, but naming it here keeps that resolveActivity() check
+             reliable on OEM builds that don't treat system packages as exempt. -->
+        <package android:name="com.android.settings" />
     </queries>
 
     <application

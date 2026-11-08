@@ -200,6 +200,91 @@ class AssistantSetupActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * True only if some activity on the device can actually handle this intent — checked before
+     * every deep-link attempt below so a guessed OEM screen that doesn't exist on this exact
+     * build falls through to the next guess instead of crashing with ActivityNotFoundException.
+     */
+    private fun resolves(intent: Intent): Boolean =
+        intent.resolveActivity(packageManager) != null
+
+    private fun tryStart(intent: Intent): Boolean {
+        return try {
+            if (!resolves(intent)) return false
+            startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Component names for each OEM's own "side/power key" settings screen. None of these are
+     * published, stable APIs — manufacturers change them across OS versions — so every single
+     * one is wrapped in resolves() and tried in order; the first one Android can actually launch
+     * on this phone wins, and if none resolve we fall back to the next tier (a settings search,
+     * then ACTION_SETTINGS). This list is best-effort and expected to need updates as OEMs ship
+     * new UI versions; it is deliberately data, not a single hardcoded guess, so one wrong/retired
+     * entry can't break the others.
+     */
+    private fun oemSideKeyIntents(brand: String): List<Intent> {
+        fun comp(pkg: String, cls: String) =
+            Intent().setClassName(pkg, cls).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        return when {
+            "samsung" in brand -> listOf(
+                // One UI 5/6: Settings > Advanced features > Side button.
+                comp("com.android.settings", "com.android.settings.Settings\$SideKeySettingsActivity"),
+                comp("com.android.settings", "com.samsung.android.settings.sidekey.SideKeySettings"),
+                comp("com.android.settings", "com.android.settings.sidekey.SideKeySettings"),
+                // Older One UI: Advanced features (the parent screen) as a fallback.
+                comp("com.android.settings", "com.android.settings.Settings\$AdvancedFeaturesSettingsActivity")
+            )
+            "xiaomi" in brand || "redmi" in brand || "poco" in brand -> listOf(
+                comp("com.android.settings", "com.android.settings.Settings\$ButtonSettingsActivity")
+            )
+            "oneplus" in brand -> listOf(
+                comp("com.android.settings", "com.oneplus.settings.ButtonSettingsActivity")
+            )
+            "google" in brand -> listOf(
+                comp("com.android.settings", "com.android.settings.Settings\$GestureSettingsActivity"),
+                comp("com.android.settings", "com.android.settings.Settings\$PowerMenuSettingsActivity")
+            )
+            else -> emptyList()
+        }
+    }
+
+    /**
+     * Best attempt at opening the exact "hold Power for Assistant" toggle, not just Settings'
+     * front page. Three tiers, each only used if the previous one couldn't resolve on this phone:
+     *   1. A direct component guess for this OEM (oemSideKeyIntents) — works when it matches.
+     *   2. Android 12+'s built-in Settings search deep link, pre-filled with "power button" —
+     *      lands the user on a results list inside Settings instead of the root page.
+     *   3. Plain ACTION_SETTINGS, same as before, as the last resort.
+     * Whichever tier actually launches, the confirmation dialog below still asks the user to
+     * confirm the switch is on, since Android has no API to read it back.
+     */
+    private fun openBrandSettings() {
+        val brand = Build.MANUFACTURER.orEmpty().lowercase()
+
+        for (intent in oemSideKeyIntents(brand)) {
+            if (tryStart(intent)) return
+        }
+
+        // Settings' own search, deep-linked with a query — on Android 12+ (and most OEM skins
+        // built on it) this opens Settings already filtered to "power button" results, which is
+        // the closest a generic path gets to the real toggle. ACTION_APP_SEARCH_SETTINGS is the
+        // documented constant for it.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val search = Intent(Settings.ACTION_APP_SEARCH_SETTINGS)
+                .putExtra("android.provider.extra.SETTINGS_SEARCH_QUERY", "power button")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (tryStart(search)) return
+        }
+
+        openSystemSettings()
+    }
+
     /** Opens the exact listening screen the real gesture shows, so the user can check it here. */
     private fun runLiveTest() {
         try {
@@ -241,7 +326,7 @@ class AssistantSetupActivity : ComponentActivity() {
                 DoublePressPrefs.setGestureConfirmed(this, true)
                 refresh(animated = true)
             }
-            .setNeutralButton("Open Settings") { _, _ -> openSystemSettings() }
+            .setNeutralButton("Open Settings") { _, _ -> openBrandSettings() }
             .setNegativeButton("Later", null)
             .show()
     }
