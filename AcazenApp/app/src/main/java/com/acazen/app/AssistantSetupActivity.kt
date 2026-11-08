@@ -1,50 +1,69 @@
 package com.acazen.app
 
 import android.Manifest
+import android.animation.TimeInterpolator
+import android.animation.ValueAnimator
 import android.app.role.RoleManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PathMeasure
 import android.graphics.Typeface
-import android.net.Uri
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
-import android.view.WindowManager
+import android.view.ViewGroup
+import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+
+private val BRAND = Color.parseColor("#1A73E8")
+private val GREEN = Color.parseColor("#1E9E5A")
+private val NAVY = Color.parseColor("#0F2E8C")
+private val INK = Color.parseColor("#112133")
+private val MUTED = Color.parseColor("#5C6B88")
+private val FAINT = Color.parseColor("#8FA0B8")
 
 /**
- * THE setup page for Acazen's hold-Power voice shortcut — replaces the old
- * DoublePressSettingsActivity, which drove an AccessibilityService that could never actually
- * see the Power key (see AcazenInteractionService's doc comment for the full explanation).
+ * The setup page for Acazen's hold-Power voice shortcut — four animated steps and nothing else:
  *
- * This page does the one thing that actually makes "hold Power → Acazen" work: ask the user to
- * make Acazen their device's registered Digital Assistant app
- * (RoleManager.ROLE_ASSISTANT). Once granted, the OS itself — not Acazen — owns the power-button
- * gesture and routes it straight to AcazenInteractionSession.
+ *   1. Microphone access
+ *   2. Make Acazen the phone's Assistant (RoleManager.ROLE_ASSISTANT) — this is what makes the OS
+ *      route a Power-hold to AcazenInteractionSession
+ *   3. Turn on "hold Power for Assistant" in the phone's own settings (Android can't read or flip
+ *      that switch, so it is a one-tap confirmation)
+ *   4. Try the listening screen
  *
- * DEBUG BUILD: has an on-screen log panel (see `log()` and the "Debug log" section in buildUi())
- * so every branch of the step-2 click path is visible directly on the device without a cable or
- * Android Studio — remove the panel + log() calls once step 2 is confirmed working end to end.
+ * The first unfinished step is the active one: it pulses and shows its button. Finishing a step
+ * draws its check mark, fills the line down to the next step and moves on. State is always
+ * re-read from the system in onResume(), never assumed from a tap, so the page can't lie about
+ * what is actually switched on.
  *
- * Same two-honest-truths design as before:
- *   1. RoleManager.createRequestRoleIntent(ROLE_ASSISTANT) does not always show a confirmation
- *      dialog on every OEM build; the reliable fallback is deep-linking to
- *      Settings.ACTION_VOICE_INPUT_SETTINGS ("Default apps › Assist & voice input") and
- *      re-checking isRoleHeld() when the user comes back — exactly like the old page re-checked
- *      Settings.Secure for the accessibility toggle.
- *   2. State is always polled fresh from RoleManager on resume, never assumed from a click, so
- *      the page can never silently lie about whether the shortcut is actually live.
+ * Fallback notes kept from the earlier version: createRequestRoleIntent(ROLE_ASSISTANT) doesn't
+ * show a dialog on every OEM build, so when the role is still off after the request returns we
+ * open "Default apps › Assist & voice input" directly.
  */
 class AssistantSetupActivity : ComponentActivity() {
 
@@ -57,63 +76,49 @@ class AssistantSetupActivity : ComponentActivity() {
         }
     }
 
-    private lateinit var micPill: TextView
-    private lateinit var assistantPill: TextView
-    private lateinit var gesturePill: TextView
-    private lateinit var testPill: TextView
-    private lateinit var primaryButton: Button
-    private lateinit var stepList: LinearLayout
-    private lateinit var debugScroll: ScrollView
-    private lateinit var debugText: TextView
-    private var announcedReady = false
+    private lateinit var rows: List<StepRow>
+    private lateinit var halo: View
+    private lateinit var heroBadge: TextView
+    private lateinit var subtitle: TextView
+    private lateinit var doneButton: Button
+    private var haloAnim: ValueAnimator? = null
     private var testedOkOnce = false
+    private var allDone = false
+    private var firstRefresh = true
 
     private val micPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { refresh(animated = true) }
 
     private val roleRequestLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            log("roleRequestLauncher returned: resultCode=${result.resultCode}")
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
             refresh(animated = true)
-            log("assistantOn() now = ${assistantOn()}")
-            if (!assistantOn()) {
-                log("-> still off, falling back to openVoiceInputSettings()")
-                openVoiceInputSettings()
-            }
+            if (!assistantOn()) openVoiceInputSettings()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Soft-blue page right up to the screen edges, dark status/nav icons on top of it.
+        val lightBars = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+        enableEdgeToEdge(statusBarStyle = lightBars, navigationBarStyle = lightBars)
         super.onCreate(savedInstanceState)
         setContentView(buildUi())
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         refresh(animated = false)
-
-        var delay = 0L
-        for (i in 0 until stepList.childCount) {
-            val child = stepList.getChildAt(i)
-            child.alpha = 0f
-            child.translationY = dp(14).toFloat()
-            child.animate().alpha(1f).translationY(0f).setStartDelay(delay).setDuration(320).start()
-            delay += 110
-        }
+        playEntrance()
     }
 
     override fun onResume() {
         super.onResume()
-        // The user may have granted/changed the assistant role or permission while we were
-        // paused in system Settings — re-read everything the moment they come back.
+        // The user may have changed the mic permission or the assistant while we were paused in
+        // system Settings — re-read everything the moment they come back.
         refresh(animated = true)
+        startHalo()
     }
 
-    // ---- debug ---------------------------------------------------------------------------------
-
-    private fun log(msg: String) {
-        val ts = android.text.format.DateFormat.format("HH:mm:ss", System.currentTimeMillis())
-        debugText.append("\n[$ts] $msg")
-        debugScroll.post { debugScroll.fullScroll(View.FOCUS_DOWN) }
+    override fun onPause() {
+        stopHalo()
+        super.onPause()
     }
 
-    // ---- state -------------------------------------------------------------------------------
+    // ---- state ---------------------------------------------------------------------------------
 
     private fun micGranted(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
@@ -129,92 +134,93 @@ class AssistantSetupActivity : ComponentActivity() {
     private fun assistantOn(): Boolean =
         roleManager()?.isRoleHeld(RoleManager.ROLE_ASSISTANT) ?: false
 
-    // ---- actions -----------------------------------------------------------------------------
+    private fun refresh(animated: Boolean) {
+        val mic = micGranted()
+        val assistant = assistantOn()
+        val gesture = DoublePressPrefs.isGestureConfirmed(this)
+        val done = booleanArrayOf(mic, assistant, gesture, testedOkOnce)
+        val active = done.indexOfFirst { !it }
+
+        rows.forEachIndexed { i, row ->
+            val s = when {
+                done[i] -> RailView.State.DONE
+                i == active -> RailView.State.ACTIVE
+                else -> RailView.State.TODO
+            }
+            row.setState(s, animated)
+        }
+
+        DoublePressPrefs.setEnabled(this, mic && assistant)
+
+        val all = active == -1
+        if (firstRefresh || all != allDone) {
+            applyAllDone(all, animate = animated && !firstRefresh)
+            allDone = all
+        }
+        firstRefresh = false
+    }
+
+    // ---- actions -------------------------------------------------------------------------------
 
     private fun requestMic() = micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
 
     /**
-     * Requests ROLE_ASSISTANT. On builds where the role dialog doesn't appear, this call still
-     * opens something useful (often the default-apps picker directly); either way onResume()
-     * re-checks isRoleHeld() so the step always ends up honest about what actually happened.
+     * Requests ROLE_ASSISTANT. On builds where the role dialog doesn't appear this still opens
+     * something useful; either way the result handler / onResume re-check isRoleHeld().
      */
     private fun requestAssistantRole() {
-        log("tap: requestAssistantRole() called")
         val rm = roleManager()
-        log("roleManager() = ${if (rm == null) "NULL (SDK < Q)" else "ok"}")
-        if (rm == null) {
-            log("-> rm null, falling back to openVoiceInputSettings()")
-            openVoiceInputSettings()
-            return
-        }
-        val available = roleAvailable()
-        log("roleAvailable() = $available")
-        if (!available) {
-            log("-> not available, falling back to openVoiceInputSettings()")
+        if (rm == null || !roleAvailable()) {
             openVoiceInputSettings()
             return
         }
         try {
-            log("-> calling createRequestRoleIntent() + launch()")
             roleRequestLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_ASSISTANT))
-            log("-> launch() returned, no exception")
         } catch (e: Exception) {
-            log("-> EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
             openVoiceInputSettings()
         }
     }
 
-    /** Fallback / manual path: "Default apps › Assist & voice input" lets the user pick
-     *  Acazen directly even on OEM builds where the role-request dialog misbehaves. */
+    /** "Default apps › Assist & voice input" lets the user pick Acazen directly. */
     private fun openVoiceInputSettings() {
-        log("openVoiceInputSettings() called")
         try {
             startActivity(
-                Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                Intent(Settings.ACTION_VOICE_INPUT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             )
-            log("-> ACTION_VOICE_INPUT_SETTINGS started ok")
         } catch (e: Exception) {
-            log("-> ACTION_VOICE_INPUT_SETTINGS failed: ${e.javaClass.simpleName}: ${e.message}")
-            try {
-                startActivity(
-                    Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-                log("-> fell back to ACTION_SETTINGS ok")
-                toast("Open Settings › Apps › Default apps › Assist & voice input, then choose Acazen")
-            } catch (ignored: Exception) {
-                log("-> ACTION_SETTINGS ALSO failed: ${ignored.javaClass.simpleName}: ${ignored.message}")
-                toast("Open Settings › Apps › Default apps › Assist & voice input, then choose Acazen")
-            }
+            openSystemSettings("Open Settings › Apps › Default apps › Assist & voice input, then choose Acazen")
         }
     }
 
-    /** Live gesture rehearsal: shows the exact same listening overlay the real gesture will
-     *  summon (VoiceCommandActivity in TEST mode), so the user can confirm mic + recognizer
-     *  work on this device before trusting the Power-hold gesture itself. */
+    private fun openSystemSettings(hint: String = "Open your phone's Settings and search for “power button”") {
+        try {
+            startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) {
+            toast(hint)
+        }
+    }
+
+    /** Opens the exact listening screen the real gesture shows, so the user can check it here. */
     private fun runLiveTest() {
-        testedOkOnce = true
-        testPill.text = "Testing…"
-        testPill.setBackgroundColor(Color.parseColor("#FFF7E6"))
-        testPill.setTextColor(Color.parseColor("#B76E00"))
         try {
             VoiceCommandActivity.launchTest(this)
+            testedOkOnce = true
         } catch (e: Exception) {
-            toast("Couldn't open the test overlay")
+            toast("Couldn't open the listening screen")
         }
     }
 
     /**
      * Most phones don't turn "hold Power for the assistant" on by themselves, and Android doesn't
-     * let an app flip it (or even read it) — so this walks the user to the right Settings screen
-     * for their brand and asks them to confirm once it's on.
+     * let an app flip it (or even read it) — so this shows the right Settings path for the
+     * phone's brand and asks the user to confirm once it's on.
      */
     private fun openGestureGuide() {
         val brand = Build.MANUFACTURER.orEmpty().lowercase()
         val path = when {
             "samsung" in brand ->
                 "Settings › Advanced features › Side button › Press and hold → choose “Wake Bixby”. " +
-                    "It opens whichever assistant is set as your default, which is Acazen once step 2 is On."
+                    "It opens whichever assistant is your default — Acazen, after step 2."
             "xiaomi" in brand || "redmi" in brand || "poco" in brand ->
                 "Settings › Additional settings › Button shortcuts → Long press Power → choose the assistant."
             "oneplus" in brand || "oppo" in brand || "realme" in brand ->
@@ -240,325 +246,576 @@ class AssistantSetupActivity : ComponentActivity() {
             .show()
     }
 
-    private fun openSystemSettings() {
-        try {
-            startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        } catch (e: Exception) {
-            toast("Open your phone's Settings app and search for “power button”")
-        }
-    }
-
-    private fun openAppSettingsPage() {
-        try {
-            startActivity(
-                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                    .setData(Uri.fromParts("package", packageName, null))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
-        } catch (e: Exception) {
-        }
-    }
-
     // ---- UI ------------------------------------------------------------------------------------
 
     private fun buildUi(): View {
-        val bg = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#F3F7FC"))
+        val root = FrameLayout(this).apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(
+                    ContextCompat.getColor(this@AssistantSetupActivity, R.color.voice_bg_top),
+                    ContextCompat.getColor(this@AssistantSetupActivity, R.color.voice_bg_bottom)
+                )
+            )
+        }
+        val scroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            clipToPadding = false
+        }
+        root.addView(scroll, FrameLayout.LayoutParams(MATCH, MATCH))
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            scroll.setPadding(0, bars.top, 0, bars.bottom)
+            insets
         }
 
-        val spacerTop = View(this)
-        bg.addView(spacerTop, lp(w = -1, h = statusBarPx()))
-
-        val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(8), dp(22), dp(24))
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(22), dp(24), dp(22), dp(32))
         }
-        scroll.addView(col)
-        bg.addView(scroll, lp(w = -1, h = -2))
+        scroll.addView(col, ViewGroup.LayoutParams(MATCH, WRAP))
 
-        val heroIcon = TextView(this).apply {
-            text = "⏻"
-            textSize = 26f
+        // ---- hero: the Acazen mark on a softly breathing glow ----
+        val hero = FrameLayout(this).apply { clipChildren = false }
+        halo = View(this).apply {
+            background = GradientDrawable().apply {
+                gradientType = GradientDrawable.RADIAL_GRADIENT
+                gradientRadius = dp(90).toFloat()
+                setGradientCenter(0.5f, 0.5f)
+                colors = intArrayOf(0x331A73E8, 0x001A73E8)
+            }
+        }
+        hero.addView(halo, FrameLayout.LayoutParams(dp(180), dp(180), Gravity.CENTER))
+        val logo = ImageView(this).apply {
+            setImageResource(R.drawable.acazen_mark)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }
+        hero.addView(logo, FrameLayout.LayoutParams(dp(132), dp(78), Gravity.CENTER))
+        heroBadge = TextView(this).apply {
+            text = "✓"
+            textSize = 16f
             setTypeface(typeface, Typeface.BOLD)
-            setTextColor(Color.parseColor("#1A73E8"))
+            setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            background = rounded("#E8F0FE", 22)
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(GREEN) }
+            alpha = 0f
+            scaleX = 0f
+            scaleY = 0f
         }
-        val heroWrap = FrameLayout(this)
-        heroWrap.addView(heroIcon, FrameLayout.LayoutParams(dp(76), dp(76), Gravity.CENTER))
-        col.addView(heroWrap, lp(w = -1, h = dp(96)))
+        hero.addView(
+            heroBadge,
+            FrameLayout.LayoutParams(dp(30), dp(30), Gravity.TOP or Gravity.START).apply {
+                leftMargin = dp(136)
+                topMargin = dp(100)
+            }
+        )
+        col.addView(hero, LinearLayout.LayoutParams(dp(180), dp(150)))
 
-        col.addView(titleText("Hold Power for Acazen", 24f, "#112133", bold = true, top = 0))
-        col.addView(bodyText(
-            "Wake Acazen anywhere, even on the lock screen — hold the Power button the same " +
-                "way you would for Google Assistant. Acazen pops up listening, you ask your " +
-                "question, and it's sent automatically.",
-            top = 6
-        ))
-
-        val note = TextView(this).apply {
-            text = "🔋  No always-on microphone. Nothing runs until you hold the button — zero battery drain."
-            textSize = 12.5f
-            setTextColor(Color.parseColor("#3C5A78"))
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded("#EAF6EF", 14)
+        val title = TextView(this).apply {
+            text = "Hold Power to talk to Acazen"
+            textSize = 24f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(NAVY)
+            gravity = Gravity.CENTER
         }
-        col.addView(note, lp(w = -1, h = -2, top = 16))
+        col.addView(title, lp(top = 6))
 
-        col.addView(titleText("Set up in 4 steps", 15f, "#112133", bold = true, top = 26))
+        subtitle = TextView(this).apply {
+            textSize = 15f
+            setTextColor(MUTED)
+            gravity = Gravity.CENTER
+        }
+        col.addView(subtitle, lp(top = 8))
 
-        micPill = pill("Not done", "#FDECEC", "#C5221F")
-        assistantPill = pill("Off", "#EEF2F7", "#5A7A9A")
-        gesturePill = pill("To do", "#EEF2F7", "#5A7A9A")
-        testPill = pill("Ready", "#EEF2F7", "#5A7A9A")
-
-        stepList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        stepList.addView(
-            stepRow("1", "Microphone access", "Lets the overlay hear what you say.", micPill)
-            { if (!micGranted()) requestMic() else toast("Microphone already allowed ✅") }
-        )
-        stepList.addView(
-            stepRow(
-                "2", "Make Acazen your Assistant",
-                "This is what makes the Power-hold gesture reach Acazen — it's the same system setting Google Assistant and Bixby use.",
-                assistantPill
-            ) { requestAssistantRole() }
-        )
-        stepList.addView(
-            stepRow(
-                "3", "Turn on hold-Power for Assistant",
-                "Most phones have this off by default. Switch your Power button's hold action to the assistant — we show you where.",
-                gesturePill
-            ) { openGestureGuide() }
-        )
-        stepList.addView(
-            stepRow(
-                "4", "Try the overlay",
-                "Rehearses the exact listening screen so you can confirm mic + recognizer work here, before relying on the real gesture.",
-                testPill
+        // ---- the four steps ----
+        rows = listOf(
+            StepRow("1", "Allow the microphone", "So Acazen can hear you.", "Allow", false) {
+                if (!micGranted()) requestMic() else toast("Microphone is already on")
+            },
+            StepRow(
+                "2", "Make Acazen your assistant",
+                "This lets the Power button open Acazen.", "Set as assistant", false
+            ) { requestAssistantRole() },
+            StepRow(
+                "3", "Turn on hold-Power",
+                "Your phone has to send a Power-hold to the assistant.", "Show me how", false
+            ) { openGestureGuide() },
+            StepRow(
+                "4", "Try it",
+                "See the listening screen before you use the real thing.", "Try now", true
             ) { runLiveTest() }
         )
-        col.addView(stepList, lp(w = -1, h = -2, top = 8))
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(20), dp(18), dp(22))
+            background = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = dp(26).toFloat()
+            }
+            elevation = dp(4).toFloat()
+        }
+        rows.forEach { card.addView(it.view, LinearLayout.LayoutParams(MATCH, WRAP)) }
+        col.addView(card, lp(top = 26))
 
-        primaryButton = Button(this).apply {
-            text = "Continue setup"
+        doneButton = Button(this).apply {
+            text = "Done"
             textSize = 16f
+            setTypeface(typeface, Typeface.BOLD)
             setTextColor(Color.WHITE)
             isAllCaps = false
             stateListAnimator = null
-            background = roundedBtn("#1A73E8", 16)
-            setOnClickListener { onPrimary() }
+            background = RippleDrawable(
+                ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
+                GradientDrawable().apply { setColor(BRAND); cornerRadius = dp(16).toFloat() },
+                null
+            )
+            visibility = View.GONE
+            setOnClickListener { finish() }
         }
-        col.addView(primaryButton, lp(w = -1, h = dp(54), top = 20))
+        col.addView(doneButton, LinearLayout.LayoutParams(MATCH, dp(54)).apply { topMargin = dp(20) })
 
-        // ---- DEBUG LOG PANEL (remove once step 2 is confirmed working) ----
-        col.addView(titleText("Debug log", 13f, "#112133", bold = true, top = 18))
-        debugText = TextView(this).apply {
-            textSize = 11f
-            setTextColor(Color.parseColor("#4CE868"))
-            typeface = Typeface.MONOSPACE
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            text = "— tap a step above —"
-        }
-        debugScroll = ScrollView(this).apply {
-            background = rounded("#0D1117", 10)
-            addView(debugText)
-        }
-        col.addView(debugScroll, lp(w = -1, h = dp(140), top = 8))
-        // ---- end debug panel ----
-
-        col.addView(titleText("How it works", 15f, "#112133", bold = true, top = 30))
-        col.addView(bodyText(
-            "① HOLD the Power button, same as you would for a phone's built-in assistant.\n" +
-                "② Acazen appears full-screen with floating light particles around its logo and writes what it hears.\n" +
-                "③ When you stop talking, the question is sent to Acazen by itself.",
-            top = 8
-        ))
-
-        col.addView(titleText("If holding Power still opens the power menu", 15f, "#112133", bold = true, top = 26))
-        col.addView(bodyText(
-            "Make sure steps 2 and 3 above are done — step 3 is the phone's own " +
-                "hold-Power switch, which needs to point at the assistant:\n\n" +
-                "• Pixel / stock: Settings › System › Gestures › Power button › hold for Assistant\n" +
-                "• Samsung: Settings › Advanced features › Side key\n" +
-                "• Xiaomi/Redmi: Settings › Apps › Default apps › Assist & voice input\n" +
-                "• Then also disable any live wallpaper's “tap/power gestures”: Settings › Wallpaper & style",
-            top = 8
-        ))
-
-        val oem = SpannableClick("Open Acazen's app settings (battery: set to Unrestricted) →") { openAppSettingsPage() }
-        val oemLink = TextView(this).apply {
-            text = oem.spannable
-            movementMethod = android.text.method.LinkMovementMethod.getInstance()
-            setTextColor(Color.parseColor("#1A73E8"))
-            textSize = 13f
-            setPadding(0, dp(10), 0, 0)
-        }
-        col.addView(oemLink)
-
-        return bg
+        return root
     }
 
-    private class SpannableClick(text: String, onClick: () -> Unit) {
-        val spannable = android.text.SpannableString(text).apply {
-            setSpan(object : android.text.style.ClickableSpan() {
-                override fun onClick(widget: View) = onClick()
-            }, 0, text.length, 0)
+    /** Hero, title, card and each step slide up one after another. */
+    private fun playEntrance() {
+        val parts = ArrayList<View>()
+        parts += (heroBadge.parent as View)
+        val col = (subtitle.parent as ViewGroup)
+        for (i in 0 until col.childCount) {
+            val v = col.getChildAt(i)
+            if (v !== doneButton && v !== parts[0]) parts += v
+        }
+        rows.forEach { parts += it.view }
+
+        var delay = 0L
+        for (v in parts) {
+            v.alpha = 0f
+            v.translationY = dp(16).toFloat()
+            v.animate().alpha(1f).translationY(0f)
+                .setStartDelay(delay).setDuration(380)
+                .setInterpolator(DecelerateInterpolator()).start()
+            delay += 90
         }
     }
 
-    private fun onPrimary() {
-        when {
-            !micGranted() -> requestMic()
-            !assistantOn() -> requestAssistantRole()
-            !DoublePressPrefs.isGestureConfirmed(this) -> openGestureGuide()
-            !testedOkOnce -> runLiveTest()
-            else -> toast("You're all set — try holding Power now 🎉")
+    private fun startHalo() {
+        if (haloAnim != null) return
+        haloAnim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 2400
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = AccelerateDecelerateInterpolator()
+            addUpdateListener {
+                val t = it.animatedValue as Float
+                val s = 0.9f + 0.18f * t
+                halo.scaleX = s
+                halo.scaleY = s
+                halo.alpha = 0.55f + 0.45f * t
+            }
+            start()
         }
     }
 
-    private fun stepRow(num: String, title: String, desc: String, pillView: TextView, onClick: () -> Unit): View {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            background = rounded("#FFFFFF", 18)
-            elevation = dp(2).toFloat()
+    private fun stopHalo() {
+        haloAnim?.cancel()
+        haloAnim = null
+    }
+
+    /** Swap the subtitle, pop the hero check and reveal "Done" once all four steps are finished. */
+    private fun applyAllDone(all: Boolean, animate: Boolean) {
+        val text = if (all) "You're all set. Hold Power anywhere to talk to Acazen."
+        else "Four quick steps — about a minute."
+
+        if (animate) {
+            subtitle.animate().cancel()
+            subtitle.animate().alpha(0f).setDuration(140).withEndAction {
+                subtitle.text = text
+                subtitle.animate().alpha(1f).setDuration(220).start()
+            }.start()
+        } else {
+            subtitle.text = text
+        }
+
+        val target = if (all) 1f else 0f
+        if (animate) {
+            heroBadge.animate().alpha(target).scaleX(target).scaleY(target)
+                .setDuration(if (all) 420L else 200L)
+                .setInterpolator(if (all) OvershootInterpolator(2.4f) else DecelerateInterpolator())
+                .start()
+        } else {
+            heroBadge.alpha = target
+            heroBadge.scaleX = target
+            heroBadge.scaleY = target
+        }
+
+        doneButton.animate().cancel()
+        if (all) {
+            doneButton.visibility = View.VISIBLE
+            if (animate) {
+                doneButton.alpha = 0f
+                doneButton.translationY = dp(12).toFloat()
+                doneButton.animate().alpha(1f).translationY(0f)
+                    .setStartDelay(250).setDuration(360).start()
+            } else {
+                doneButton.alpha = 1f
+                doneButton.translationY = 0f
+            }
+        } else {
+            doneButton.visibility = View.GONE
+        }
+    }
+
+    // ---- one step -------------------------------------------------------------------------------
+
+    /**
+     * Rail (number / check badge + the line down to the next step) on the left; title, one short
+     * line and — only while this is the active step — its button on the right.
+     */
+    private inner class StepRow(
+        num: String,
+        titleText: String,
+        descText: String,
+        actionLabel: String,
+        last: Boolean,
+        private val onClick: () -> Unit
+    ) {
+        var state = RailView.State.TODO
+            private set
+        private var buttonFrac = 0f
+        private var buttonAnim: ValueAnimator? = null
+
+        private val rail = RailView(this@AssistantSetupActivity, num, last).apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        private val titleView = TextView(this@AssistantSetupActivity).apply {
+            text = titleText
+            textSize = 16f
+            setTypeface(typeface, Typeface.BOLD)
+        }
+        private val descView = TextView(this@AssistantSetupActivity).apply {
+            text = descText
+            textSize = 13.5f
+        }
+        private val button = Button(this@AssistantSetupActivity).apply {
+            text = actionLabel
+            textSize = 14.5f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            isAllCaps = false
+            stateListAnimator = null
+            minHeight = 0
+            minimumHeight = 0
+            minWidth = 0
+            minimumWidth = 0
+            gravity = Gravity.CENTER
+            setPadding(dp(22), 0, dp(22), 0)
+            background = RippleDrawable(
+                ColorStateList.valueOf(Color.argb(60, 255, 255, 255)),
+                GradientDrawable().apply { setColor(BRAND); cornerRadius = dp(14).toFloat() },
+                null
+            )
+            visibility = View.GONE
             setOnClickListener { onClick() }
         }
-        val badge = TextView(this).apply {
-            text = num
-            textSize = 15f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(Color.parseColor("#1A73E8"))
-            gravity = Gravity.CENTER
-            background = rounded("#E8F0FE", 20)
-        }
-        row.addView(badge, lp(w = dp(40), h = dp(40), margin = true))
-
-        val texts = LinearLayout(this).apply {
+        private val content = LinearLayout(this@AssistantSetupActivity).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
+            // 13dp puts the title's first line level with the middle of the 34dp badge.
+            setPadding(0, dp(13), 0, if (last) 0 else dp(22))
+            addView(titleView)
+            addView(descView, lp(top = 3))
+            addView(button, LinearLayout.LayoutParams(WRAP, 0))
         }
-        texts.addView(titleText(title, 15f, "#112133", bold = true, top = 0))
-        texts.addView(bodyText(desc, top = 3, size = 12.5f))
-        val tl = lp(w = 0, h = -2)
-        tl.weight = 1.0f
-        texts.layoutParams = tl
-        row.addView(texts)
 
-        val pl = lp(w = -2, h = -2, margin = true)
-        pl.gravity = Gravity.CENTER_VERTICAL
-        row.addView(pillView, pl)
-        return row
+        val view = LinearLayout(this@AssistantSetupActivity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(rail, LinearLayout.LayoutParams(dp(48), MATCH))
+            addView(content, LinearLayout.LayoutParams(0, WRAP, 1f).apply { leftMargin = dp(6) })
+            setOnClickListener { if (state != RailView.State.TODO) onClick() }
+        }
+
+        init { setState(RailView.State.TODO, animate = false) }
+
+        fun setState(s: RailView.State, animate: Boolean) {
+            val changed = s != state
+            state = s
+            rail.setState(s, animate && changed)
+            titleView.setTextColor(
+                when (s) {
+                    RailView.State.ACTIVE -> NAVY
+                    RailView.State.DONE -> INK
+                    RailView.State.TODO -> FAINT
+                }
+            )
+            descView.setTextColor(if (s == RailView.State.TODO) FAINT else MUTED)
+            showButton(s == RailView.State.ACTIVE, animate && changed)
+        }
+
+        private fun showButton(show: Boolean, animate: Boolean) {
+            buttonAnim?.cancel()
+            val to = if (show) 1f else 0f
+            if (!animate) {
+                applyButton(to)
+                return
+            }
+            buttonAnim = ValueAnimator.ofFloat(buttonFrac, to).apply {
+                duration = 320
+                interpolator = DecelerateInterpolator()
+                addUpdateListener { applyButton(it.animatedValue as Float) }
+                start()
+            }
+        }
+
+        private fun applyButton(f: Float) {
+            buttonFrac = f
+            val params = button.layoutParams as LinearLayout.LayoutParams
+            params.height = (dp(46) * f).toInt()
+            params.topMargin = (dp(12) * f).toInt()
+            button.layoutParams = params
+            button.alpha = f
+            button.visibility = if (f <= 0f) View.GONE else View.VISIBLE
+        }
     }
 
-    private fun pill(text: String, bgHex: String, fgHex: String) = TextView(this).apply {
-        this.text = text
-        textSize = 11.5f
-        setTypeface(typeface, Typeface.BOLD)
-        setTextColor(Color.parseColor(fgHex))
-        setPadding(dp(10), dp(6), dp(10), dp(6))
-        background = rounded(bgHex, 12)
-        gravity = Gravity.CENTER
-    }
+    // ---- helpers ---------------------------------------------------------------------------------
 
-    private fun titleText(t: String, size: Float, color: String, bold: Boolean, top: Int): TextView {
-        return TextView(this).apply {
-            text = t
-            textSize = size
-            if (bold) setTypeface(typeface, Typeface.BOLD)
-            setTextColor(Color.parseColor(color))
-            layoutParams = lp(w = -1, h = -2, top = top)
-        }
-    }
+    private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+    private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
-    private fun bodyText(t: String, top: Int, size: Float = 14f) = TextView(this).apply {
-        text = t
-        textSize = size
-        setTextColor(Color.parseColor("#445A70"))
-        layoutParams = lp(w = -1, h = -2, top = top)
-    }
-
-    private fun rounded(hex: String, radiusDp: Int) =
-        android.graphics.drawable.GradientDrawable().apply {
-            setColor(Color.parseColor(hex))
-            cornerRadius = dp(radiusDp).toFloat()
-        }
-
-    private fun roundedBtn(hex: String, radiusDp: Int) =
-        android.graphics.drawable.GradientDrawable().apply {
-            setColor(Color.parseColor(hex))
-            cornerRadius = dp(radiusDp).toFloat()
-        }
-
-    private fun lp(w: Int, h: Int, top: Int = 0, margin: Boolean = false): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(w, h).apply {
-            if (top != 0) topMargin = dp(top)
-            if (margin) setMargins(dp(10), 0, dp(10), 0)
-        }
+    private fun lp(top: Int = 0) = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(top) }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-    private fun dp(v: Float): Int = (v * resources.displayMetrics.density).toInt()
-
-    private fun statusBarPx(): Int =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val id = resources.getIdentifier("status_bar_height", "dimen", "android")
-            if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
-        } else dp(24)
 
     private fun toast(msg: String) {
         android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
     }
+}
 
-    // ---- live state sync ------------------------------------------------------------------------
+/**
+ * The left rail of one step: a numbered badge that pulses while it is the active step, turns into
+ * a green badge whose check mark draws itself when the step is done, plus the line down to the
+ * next step, which fills green as the step completes.
+ */
+internal class RailView(
+    context: Context,
+    private val number: String,
+    private val isLast: Boolean
+) : View(context) {
 
-    private fun refresh(animated: Boolean) {
-        val mic = micGranted()
-        val assistant = assistantOn()
+    enum class State { TODO, ACTIVE, DONE }
 
-        setPill(micPill, if (mic) "Done ✓" else "Needed",
-            if (mic) "#E6F4EA" else "#FDECEC", if (mic) "#137333" else "#C5221F", animated && mic)
-        setPill(assistantPill, if (assistant) "On ✓" else "Off",
-            if (assistant) "#E6F4EA" else "#EEF2F7", if (assistant) "#137333" else "#5A7A9A", animated && assistant)
-        val gesture = DoublePressPrefs.isGestureConfirmed(this)
-        setPill(gesturePill, if (gesture) "Done ✓" else "To do",
-            if (gesture) "#E6F4EA" else "#EEF2F7", if (gesture) "#137333" else "#5A7A9A", animated && gesture)
-        setPill(testPill, if (testedOkOnce) "Tried ✓" else "Ready",
-            "#E6F4EA", "#137333", animate = false)
+    private val d = resources.displayMetrics.density
+    private val badgeR = 17f * d
+    private val ringMax = 7f * d
 
-        DoublePressPrefs.setEnabled(this, mic && assistant)
+    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 3f * d
+        strokeCap = Paint.Cap.ROUND
+        color = Color.parseColor("#D5E3F5")
+    }
+    private val fillPaint = Paint(trackPaint).apply { color = GREEN }
+    private val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * d
+        color = Color.parseColor("#BFD1E8")
+    }
+    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * d
+        color = BRAND
+    }
+    private val numberPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        textSize = 15f * d
+        typeface = Typeface.DEFAULT_BOLD
+    }
+    private val checkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2.6f * d
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        color = Color.WHITE
+    }
+    private val checkPath = Path()
+    private val checkPart = Path()
+    private var checkLen = 1f
 
-        primaryButton.text = when {
-            !mic -> "Allow microphone"
-            !assistant -> "Make Acazen my Assistant"
-            !gesture -> "Turn on hold-Power for Assistant"
-            !testedOkOnce -> "Try it: open the listening overlay"
-            else -> "All set — hold Power to try it"
-        }
+    private var state = State.TODO
+    private var checkProgress = 0f
+    private var lineProgress = 0f
+    private var pop = 1f
+    private var pulse = 0f
+    private var pulseAnim: ValueAnimator? = null
+    private val oneShots = ArrayList<ValueAnimator>()
 
-        if (mic && assistant) {
-            if (animated && !announcedReady) {
-                announcedReady = true
-                toast("✅ Hold-Power is ON — press and HOLD Power anywhere to speak to Acazen")
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val minSide = ((badgeR + ringMax) * 2f).toInt()
+        setMeasuredDimension(
+            resolveSize(minSide, widthMeasureSpec),
+            resolveSize(minSide, heightMeasureSpec)
+        )
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        val cx = w / 2f
+        val cy = w / 2f
+        checkPath.reset()
+        checkPath.moveTo(cx - 0.42f * badgeR, cy + 0.04f * badgeR)
+        checkPath.lineTo(cx - 0.12f * badgeR, cy + 0.36f * badgeR)
+        checkPath.lineTo(cx + 0.44f * badgeR, cy - 0.30f * badgeR)
+        checkLen = PathMeasure(checkPath, false).length
+    }
+
+    fun setState(s: State, animate: Boolean) {
+        val previous = state
+        state = s
+        cancelOneShots()
+        when (s) {
+            State.DONE -> {
+                stopPulse()
+                if (animate && previous != State.DONE) {
+                    checkProgress = 0f
+                    lineProgress = 0f
+                    pop = 0.7f
+                    animateValue(0f, 1f, 420, DecelerateInterpolator()) { checkProgress = it }
+                    animateValue(0.7f, 1f, 360, OvershootInterpolator(2.2f)) { pop = it }
+                    animateValue(0f, 1f, 520, DecelerateInterpolator(), delay = 260) { lineProgress = it }
+                } else {
+                    checkProgress = 1f
+                    lineProgress = 1f
+                    pop = 1f
+                }
             }
-        } else {
-            announcedReady = false
+            State.ACTIVE -> {
+                checkProgress = 0f
+                lineProgress = 0f
+                pop = 1f
+                if (animate) animateValue(0.8f, 1f, 360, OvershootInterpolator(2f)) { pop = it }
+                startPulse()
+            }
+            State.TODO -> {
+                stopPulse()
+                checkProgress = 0f
+                lineProgress = 0f
+                pop = 1f
+            }
+        }
+        invalidate()
+    }
+
+    private fun animateValue(
+        from: Float, to: Float, ms: Long, interpolator: TimeInterpolator,
+        delay: Long = 0L, onValue: (Float) -> Unit
+    ) {
+        val a = ValueAnimator.ofFloat(from, to).apply {
+            duration = ms
+            startDelay = delay
+            this.interpolator = interpolator
+            addUpdateListener {
+                onValue(it.animatedValue as Float)
+                invalidate()
+            }
+        }
+        oneShots += a
+        a.start()
+    }
+
+    private fun cancelOneShots() {
+        oneShots.forEach { it.cancel() }
+        oneShots.clear()
+    }
+
+    private fun startPulse() {
+        if (pulseAnim != null) return
+        pulseAnim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 1500
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = DecelerateInterpolator(1.2f)
+            addUpdateListener {
+                pulse = it.animatedValue as Float
+                invalidate()
+            }
+            start()
         }
     }
 
-    private fun setPill(pillView: TextView, text: String, bgHex: String, fgHex: String, animate: Boolean) {
-        val changed = pillView.text != text
-        pillView.text = text
-        pillView.setBackgroundColor(Color.parseColor(bgHex))
-        pillView.setTextColor(Color.parseColor(fgHex))
-        if (animate && changed) {
-            pillView.scaleX = 0.6f
-            pillView.scaleY = 0.6f
-            pillView.animate().scaleX(1f).scaleY(1f).setDuration(260).setInterpolator(
-                android.view.animation.OvershootInterpolator()
-            ).start()
+    private fun stopPulse() {
+        pulseAnim?.cancel()
+        pulseAnim = null
+        pulse = 0f
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        if (visibility == VISIBLE) {
+            if (state == State.ACTIVE) startPulse()
+        } else {
+            stopPulse()
         }
+    }
+
+    override fun onDetachedFromWindow() {
+        cancelOneShots()
+        stopPulse()
+        super.onDetachedFromWindow()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val cx = width / 2f
+        val cy = width / 2f
+
+        // The line down to the next step (grey track, green fill once this step is done).
+        if (!isLast) {
+            val y0 = cy + badgeR + 6f * d
+            val y1 = height.toFloat()
+            if (y1 > y0) {
+                canvas.drawLine(cx, y0, cx, y1, trackPaint)
+                if (lineProgress > 0f) {
+                    canvas.drawLine(cx, y0, cx, y0 + (y1 - y0) * lineProgress, fillPaint)
+                }
+            }
+        }
+
+        // Soft ring that ripples outwards from the active badge.
+        if (state == State.ACTIVE && pulse > 0f) {
+            ringPaint.alpha = ((1f - pulse) * 110f).toInt().coerceIn(0, 255)
+            canvas.drawCircle(cx, cy, badgeR + ringMax * pulse, ringPaint)
+        }
+
+        canvas.save()
+        canvas.scale(pop, pop, cx, cy)
+        when (state) {
+            State.DONE -> {
+                badgePaint.color = GREEN
+                canvas.drawCircle(cx, cy, badgeR, badgePaint)
+                if (checkProgress > 0f) {
+                    checkPart.reset()
+                    PathMeasure(checkPath, false).getSegment(0f, checkLen * checkProgress, checkPart, true)
+                    canvas.drawPath(checkPart, checkPaint)
+                }
+            }
+            State.ACTIVE -> {
+                badgePaint.color = BRAND
+                canvas.drawCircle(cx, cy, badgeR, badgePaint)
+                drawNumber(canvas, cx, cy, Color.WHITE)
+            }
+            State.TODO -> {
+                badgePaint.color = Color.WHITE
+                canvas.drawCircle(cx, cy, badgeR, badgePaint)
+                canvas.drawCircle(cx, cy, badgeR - outlinePaint.strokeWidth / 2f, outlinePaint)
+                drawNumber(canvas, cx, cy, FAINT)
+            }
+        }
+        canvas.restore()
+    }
+
+    private fun drawNumber(canvas: Canvas, cx: Float, cy: Float, color: Int) {
+        numberPaint.color = color
+        val baseline = cy - (numberPaint.descent() + numberPaint.ascent()) / 2f
+        canvas.drawText(number, cx, baseline, numberPaint)
     }
 }
