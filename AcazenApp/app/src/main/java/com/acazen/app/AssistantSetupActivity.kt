@@ -302,23 +302,84 @@ class AssistantSetupActivity : ComponentActivity() {
      */
     private fun openGestureGuide() {
         val brand = Build.MANUFACTURER.orEmpty().lowercase()
+        val model = Build.MODEL.orEmpty()
+
+        // Each entry is the exact menu path on that brand's current settings app, ending in
+        // which option to pick. Acazen needs the OPPOSITE of each brand's own default-safety
+        // wording: their docs describe how to route hold-Power to "Power menu" (so the user
+        // doesn't need an assistant); we need hold-Power to go to the assistant instead, which
+        // on Android then lands on whichever app holds ROLE_ASSISTANT — Acazen, after step 2.
         val path = when {
             "samsung" in brand ->
-                "Settings › Advanced features › Side button › Press and hold → choose “Wake Bixby”. " +
-                    "It opens whichever assistant is your default — Acazen, after step 2."
+                "Settings › Advanced features › Side button (or Side key) › under “Press and hold”, " +
+                    "choose “Wake Bixby” (sometimes labelled “Digital assistant”) instead of “Power off menu”.\n\n" +
+                    "Shortcut: swipe down the notification panel twice › tap the Power icon in the quick " +
+                    "settings toolbar › tap “Side button settings” at the bottom."
+            "google" in brand || "motorola" in brand || "moto" in brand || "nothing" in brand ||
+                "hmd" in brand || "nokia" in brand ->
+                "Settings › System › Gestures › “Press and hold power button” › choose “Digital assistant” " +
+                    "instead of “Power menu”."
             "xiaomi" in brand || "redmi" in brand || "poco" in brand ->
-                "Settings › Additional settings › Button shortcuts → Long press Power → choose the assistant."
+                "Settings › Additional settings › Gesture shortcuts › “Launch Google Assistant” › turn ON " +
+                    "the switch for “Press and hold the Power button for 0.5s”."
             "oneplus" in brand || "oppo" in brand || "realme" in brand ->
-                "Settings › Buttons & gestures (or Additional settings › Power button) → Press and hold power button → Assistant."
-            "google" in brand ->
-                "Settings › System › Gestures › Press & hold power button → choose “Digital assistant”."
+                "Settings › System settings (or Additional settings) › Power button › “Press and hold the " +
+                    "power button” › choose “Voice Assistant” instead of “Power Menu”."
+            "vivo" in brand || "iqoo" in brand ->
+                "Settings › Shortcuts & accessibility › “Press and hold power button” › set the popup to " +
+                    "“Launch Google Assistant” instead of the power and emergency menu."
+            "asus" in brand ->
+                "Settings › Advanced › “Press and hold power button” (or “Smart key”) › set it to launch " +
+                    "the voice assistant instead of “Power menu”."
+            "sony" in brand ->
+                "Settings › System › Gestures › Power menu › turn ON “Hold for assistant”, or set " +
+                    "“Long press action” to assistant instead of power menu."
+            "tecno" in brand || "infinix" in brand ->
+                "Settings › Special function › Voice Assistant (or Smart Key) › turn ON “Press and hold " +
+                    "power button to wake up Assistant”."
+            "honor" in brand ->
+                "Settings › Accessibility features › Shortcuts & gestures › “Wake AI Voice” › turn ON the " +
+                    "“Power button” switch."
+            "huawei" in brand ->
+                "Settings › Accessibility features › Shortcuts & gestures › “Wake Celia” › turn ON the " +
+                    "Power button switch."
+            "meizu" in brand ->
+                "Settings › Accessibility › Quick gestures (or Power Button) › turn ON “Press and hold the " +
+                    "power button to launch Voice Assistant”."
+            "zte" in brand || "nubia" in brand || "redmagic" in brand ->
+                "Settings › Features (or System & updates) › Gestures & motions › “Press and hold power " +
+                    "button” › choose “Voice Assistant” instead of “Power Off Menu”."
+            "lenovo" in brand ->
+                "Settings › Advanced features › Smart key (or Power key) › set “Long press” to “Google " +
+                    "Assistant” instead of “Power & Restart Menu”."
+            "sharp" in brand ->
+                "Settings › System › Smart key / Gestures › “Power button behavior” › switch the long-press " +
+                    "setting to “Launch Google Assistant” instead of “Power menu”."
+            "tcl" in brand ->
+                "Settings › Advanced features › Smart Key / Power key › “Press and hold power button” › " +
+                    "choose “Digital Assistant” instead of “Power off menu”."
+            "blackview" in brand || "doogee" in brand || "oukitel" in brand ->
+                "Settings › Special functions › Quick start / Smart Key settings › “Press and hold power " +
+                    "button” › switch the action to “Google Assistant” instead of “System Power Menu”."
+            "fairphone" in brand ->
+                "Settings › System › Gestures › “Press and hold power button” › change it from “Power " +
+                    "menu” to “Digital assistant”."
+            "kyocera" in brand ->
+                "Settings › Programmable keys › Power key / Side key › set the long-press action to " +
+                    "“Voice Command/Assistant” instead of “Power Menu / System Default”."
+            "umidigi" in brand || "uidigi" in brand ->
+                "Settings › Smart Assistant › Shortcut key / Power button shortcut › turn ON “Press and " +
+                    "hold power button” for the Assistant (it's off by default, set to Power menu)."
             else ->
-                "Settings › System › Gestures › Press & hold power button → “Digital assistant”. " +
-                    "On other brands look under “Side key”, “Power button” or “Button shortcuts”."
+                "Settings › System › Gestures › “Press and hold power button” › choose “Digital assistant” " +
+                    "instead of “Power menu”. On other brands look under “Side key”, “Power button” or " +
+                    "“Button shortcuts”."
         }
-        val message = "Many phones ship with this switched off, so holding Power just opens the power menu.\n\n" +
-            "On your phone:\n$path\n\n" +
+
+        val message = "Many phones ship with this switched off, so holding Power just opens the power menu " +
+            "instead of Acazen.\n\nOn your $model:\n$path\n\n" +
             "Can't find it? Search Settings for “power button” or “side key”."
+
         android.app.AlertDialog.Builder(this)
             .setTitle("Turn on hold-Power for Assistant")
             .setMessage(message)
