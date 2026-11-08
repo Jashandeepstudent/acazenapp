@@ -135,7 +135,7 @@ class ListeningOverlay(context: Context) {
     fun showListening() {
         animation.state = ListeningAnimationView.State.LISTENING
         caption.text = "Listening…"
-        hint = "say anything"
+        hint = "ask anything, or say “Open Acazen”"
         refreshSub()
     }
 
@@ -150,6 +150,15 @@ class ListeningOverlay(context: Context) {
         animation.state = ListeningAnimationView.State.PROCESSING
         caption.text = "Thinking…"
         hint = subtitle
+        refreshSub()
+    }
+
+    /** Brisk animation + "Opening Acazen…" — the user asked to open the app, nothing is sent. */
+    fun showOpening() {
+        animation.state = ListeningAnimationView.State.PROCESSING
+        caption.text = "Opening Acazen…"
+        heard = ""
+        hint = ""
         refreshSub()
     }
 
