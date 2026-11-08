@@ -61,7 +61,6 @@ class VoiceCommandActivity : ComponentActivity() {
         // recognizer never reports end-of-speech).
         private const val MAX_LISTEN_MS = 8000L
         private const val SENDING_HOLD_MS = 700L
-        private const val OPEN_HOLD_MS = 250L
     }
 
     private var recognizer: SpeechRecognizer? = null
@@ -180,7 +179,6 @@ class VoiceCommandActivity : ComponentActivity() {
 
     private var retriedOnce = false
     private var lastHeard: String? = null
-    private var openPending: Runnable? = null
 
     private fun listeningIntent() = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -192,22 +190,6 @@ class VoiceCommandActivity : ComponentActivity() {
         val t = firstText(bundle) ?: return
         lastHeard = t
         overlay.showHeard(t)
-        scheduleOpenIfCommand(t)
-    }
-
-    /**
-     * "Open Acazen": as soon as the live transcript is that command and has stopped changing for
-     * a moment, open the app — no need to wait for the recognizer's own end-of-speech delay. If
-     * the user keeps talking ("open Acazen and explain…") the transcript changes, this is
-     * cancelled, and the whole sentence is sent as a question as usual.
-     */
-    private fun scheduleOpenIfCommand(heard: String) {
-        openPending?.let { mainHandler.removeCallbacks(it) }
-        openPending = null
-        if (sent || !OpenCommand.matches(heard)) return
-        val r = Runnable { openPending = null; deliverLastKnown() }
-        openPending = r
-        mainHandler.postDelayed(r, OpenCommand.SETTLE_MS)
     }
 
     private fun deliver(bundle: Bundle?) {
@@ -233,46 +215,30 @@ class VoiceCommandActivity : ComponentActivity() {
         mainHandler.postDelayed({ if (!isFinishing) finish() }, 2600)
     }
 
-    /**
-     * Auto-send: open Acazen in voice mode carrying the spoken text, then vanish. If the user
-     * just said "Open Acazen", open the app on its home screen instead (nothing is sent to the
-     * chat) and do it right away.
-     */
+    /** Auto-send: open Acazen in voice mode carrying the spoken text, then vanish. */
     private fun handOff(text: String?) {
         if (sent) return
         sent = true
-        openPending?.let { mainHandler.removeCallbacks(it) }
-        openPending = null
-        val openOnly = OpenCommand.matches(text)
 
         if (intent?.action == ACTION_TEST) {
             // Rehearsal mode: show what we heard right here so the user gets instant feedback.
             overlay.showMessage(
-                when {
-                    openOnly -> "✓ Heard “Open Acazen” — on the real gesture the app opens instantly."
-                    text != null -> "✓ Heard: \"$text\" — the gesture works!"
-                    else -> "✗ Didn't catch that — try again from the setup page."
-                }
+                if (text != null) "✓ Heard: \"$text\" — the gesture works!"
+                else "✗ Didn't catch that — try again from the setup page."
             )
             mainHandler.postDelayed({ if (!isFinishing) finish() }, 2800)
             return
         }
 
-        if (openOnly) overlay.showOpening()
-        else overlay.showThinking(if (text != null) "Sending to Acazen…" else "Opening Acazen…")
+        overlay.showThinking(if (text != null) "Sending to Acazen…" else "Opening Acazen…")
 
         mainHandler.postDelayed({
             try {
                 val main = Intent(this, MainActivity::class.java).apply {
-                    if (openOnly) {
-                        action = Intent.ACTION_MAIN
-                        addCategory(Intent.CATEGORY_LAUNCHER)
-                    } else {
-                        // With text: voice-command handoff; without: plain wake handoff (the site
-                        // still enters ?voice=1 mode either way — see MainActivity.homeUrlFor).
-                        action = if (text != null) ACTION_VOICE_COMMAND else MainActivity.ACTION_WAKE_WORD
-                        if (text != null) putExtra(EXTRA_VOICE_TEXT, text)
-                    }
+                    // With text: voice-command handoff; without: plain wake handoff (the site
+                    // still enters ?voice=1 mode either way — see MainActivity.homeUrlFor).
+                    action = if (text != null) ACTION_VOICE_COMMAND else MainActivity.ACTION_WAKE_WORD
+                    if (text != null) putExtra(EXTRA_VOICE_TEXT, text)
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                         Intent.FLAG_ACTIVITY_SINGLE_TOP or
                         Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -288,7 +254,7 @@ class VoiceCommandActivity : ComponentActivity() {
             }
             finish()
             overridePendingTransition(0, android.R.anim.fade_out)
-        }, if (openOnly) OPEN_HOLD_MS else SENDING_HOLD_MS)
+        }, SENDING_HOLD_MS)
     }
 
     override fun onDestroy() {

@@ -426,7 +426,7 @@ class AssistantSetupActivity : ComponentActivity() {
 
     /** Swap the subtitle, pop the hero check and reveal "Done" once all four steps are finished. */
     private fun applyAllDone(all: Boolean, animate: Boolean) {
-        val text = if (all) "You're all set. Hold Power, then ask a question or say “Open Acazen”."
+        val text = if (all) "You're all set. Hold Power anywhere to talk to Acazen."
         else "Four quick steps — about a minute."
 
         if (animate) {

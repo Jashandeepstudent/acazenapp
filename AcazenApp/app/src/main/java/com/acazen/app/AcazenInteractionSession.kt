@@ -40,7 +40,6 @@ class AcazenInteractionSession(context: Context) : VoiceInteractionSession(conte
     companion object {
         private const val MAX_LISTEN_MS = 8000L
         private const val SENDING_HOLD_MS = 700L
-        private const val OPEN_HOLD_MS = 250L
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -49,7 +48,6 @@ class AcazenInteractionSession(context: Context) : VoiceInteractionSession(conte
     private var sent = false
     private var retriedOnce = false
     private var lastHeard: String? = null
-    private var openPending: Runnable? = null
 
     private lateinit var overlay: ListeningOverlay
 
@@ -175,22 +173,6 @@ class AcazenInteractionSession(context: Context) : VoiceInteractionSession(conte
         val t = firstText(bundle) ?: return
         lastHeard = t
         overlay.showHeard(t)
-        scheduleOpenIfCommand(t)
-    }
-
-    /**
-     * "Open Acazen": as soon as the live transcript is that command and has stopped changing for
-     * a moment, open the app — no need to wait for the recognizer's own end-of-speech delay. If
-     * the user keeps talking ("open Acazen and explain…") the transcript changes, this is
-     * cancelled, and the whole sentence is sent as a question as usual.
-     */
-    private fun scheduleOpenIfCommand(heard: String) {
-        openPending?.let { mainHandler.removeCallbacks(it) }
-        openPending = null
-        if (sent || !OpenCommand.matches(heard)) return
-        val r = Runnable { openPending = null; deliverLastKnown() }
-        openPending = r
-        mainHandler.postDelayed(r, OpenCommand.SETTLE_MS)
     }
 
     private fun deliver(bundle: Bundle?) {
@@ -211,31 +193,18 @@ class AcazenInteractionSession(context: Context) : VoiceInteractionSession(conte
         mainHandler.postDelayed({ handOff(text = null) }, 1200)
     }
 
-    /**
-     * Auto-send: open Acazen in voice mode carrying the spoken text, then close the session.
-     * If the user just said "Open Acazen", open the app on its home screen instead — nothing is
-     * sent to the chat — and do it right away.
-     */
+    /** Auto-send: open Acazen in voice mode carrying the spoken text, then close the session. */
     private fun handOff(text: String?) {
         if (sent) return
         sent = true
-        openPending?.let { mainHandler.removeCallbacks(it) }
-        openPending = null
-        val openOnly = OpenCommand.matches(text)
-        if (openOnly) overlay.showOpening()
-        else overlay.showThinking(if (text != null) "Sending to Acazen…" else "Opening Acazen…")
+        overlay.showThinking(if (text != null) "Sending to Acazen…" else "Opening Acazen…")
 
         mainHandler.postDelayed({
             try {
                 val main = Intent(context, MainActivity::class.java).apply {
-                    if (openOnly) {
-                        action = Intent.ACTION_MAIN
-                        addCategory(Intent.CATEGORY_LAUNCHER)
-                    } else {
-                        action = if (text != null) VoiceCommandActivity.ACTION_VOICE_COMMAND
-                        else MainActivity.ACTION_WAKE_WORD
-                        if (text != null) putExtra(VoiceCommandActivity.EXTRA_VOICE_TEXT, text)
-                    }
+                    action = if (text != null) VoiceCommandActivity.ACTION_VOICE_COMMAND
+                    else MainActivity.ACTION_WAKE_WORD
+                    if (text != null) putExtra(VoiceCommandActivity.EXTRA_VOICE_TEXT, text)
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                         Intent.FLAG_ACTIVITY_SINGLE_TOP or
                         Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -250,7 +219,7 @@ class AcazenInteractionSession(context: Context) : VoiceInteractionSession(conte
                 } catch (ignored: Exception) {}
             }
             hide()
-        }, if (openOnly) OPEN_HOLD_MS else SENDING_HOLD_MS)
+        }, SENDING_HOLD_MS)
     }
 
     override fun onHide() {
